@@ -19,12 +19,16 @@ const childEnvKeys = [
 const sharedHomeDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-home-"));
 const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;
+const previousPiAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.HOME = sharedHomeDir;
 process.env.USERPROFILE = sharedHomeDir;
+process.env.PI_CODING_AGENT_DIR = path.join(sharedHomeDir, "a");
 const { IntercomClient } = await import("./broker/client.ts");
 process.on("exit", () => {
   process.env.HOME = previousHome;
   process.env.USERPROFILE = previousUserProfile;
+  if (previousPiAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = previousPiAgentDir;
   rmSync(sharedHomeDir, { recursive: true, force: true });
 });
 

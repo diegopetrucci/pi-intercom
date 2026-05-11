@@ -1,15 +1,26 @@
 import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
 import { randomUUID } from "crypto";
+import { getIntercomDir } from "../profile.js";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
 import type { SessionInfo, Message, Attachment, BrokerMessage } from "../types.js";
 
-const INTERCOM_DIR = join(homedir(), ".pi/agent/intercom");
-const SOCKET_PATH = getBrokerSocketPath();
-const PID_PATH = join(INTERCOM_DIR, "broker.pid");
+interface BrokerRuntimePaths {
+  intercomDir: string;
+  socket: string;
+  pid: string;
+}
+
+function getBrokerRuntimePaths(): BrokerRuntimePaths {
+  const intercomDir = getIntercomDir();
+  return {
+    intercomDir,
+    socket: getBrokerSocketPath(),
+    pid: join(intercomDir, "broker.pid"),
+  };
+}
 
 interface ConnectedSession {
   socket: net.Socket;
@@ -98,12 +109,14 @@ class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
+  private paths: BrokerRuntimePaths;
 
-  constructor() {
-    mkdirSync(INTERCOM_DIR, { recursive: true });
+  constructor(paths: BrokerRuntimePaths = getBrokerRuntimePaths()) {
+    this.paths = paths;
+    mkdirSync(this.paths.intercomDir, { recursive: true });
     if (process.platform !== "win32") {
       try {
-        unlinkSync(SOCKET_PATH);
+        unlinkSync(this.paths.socket);
       } catch {
         // A clean startup has no stale socket to remove.
       }
@@ -112,8 +125,8 @@ class IntercomBroker {
   }
 
   start(): void {
-    this.server.listen(SOCKET_PATH, () => {
-      writeFileSync(PID_PATH, String(process.pid));
+    this.server.listen(this.paths.socket, () => {
+      writeFileSync(this.paths.pid, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
     });
     process.on("SIGTERM", () => this.shutdown());
@@ -327,13 +340,13 @@ class IntercomBroker {
     this.sessions.clear();
     if (process.platform !== "win32") {
       try {
-        unlinkSync(SOCKET_PATH);
+        unlinkSync(this.paths.socket);
       } catch {
         // The socket may already be gone if shutdown started after a disconnect.
       }
     }
     try {
-      unlinkSync(PID_PATH);
+      unlinkSync(this.paths.pid);
     } catch {
       // The PID file may already be gone if startup never completed.
     }

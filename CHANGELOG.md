@@ -4,6 +4,9 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+- Resolve intercom config and broker runtime files from `PI_CODING_AGENT_DIR` when set, falling back to `~/.pi/agent` for normal Pi sessions.
+
 ## [0.6.0] - 2026-05-03
 
 ### Added

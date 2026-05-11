@@ -1,5 +1,5 @@
 import { join } from "path";
-import { homedir } from "os";
+import { getIntercomDir, getPiAgentDir } from "../profile.js";
 
 function sanitizePipeSegment(value: string): string {
   return value
@@ -10,11 +10,11 @@ function sanitizePipeSegment(value: string): string {
 
 export function getBrokerSocketPath(
   platform: NodeJS.Platform = process.platform,
-  homeDir: string = homedir(),
+  agentDir: string = getPiAgentDir(),
 ): string {
   if (platform === "win32") {
-    return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(homeDir)}`;
+    return `\\\\.\\pipe\\pi-intercom-${sanitizePipeSegment(agentDir)}`;
   }
 
-  return join(homeDir, ".pi/agent/intercom/broker.sock");
+  return join(getIntercomDir(agentDir), "broker.sock");
 }

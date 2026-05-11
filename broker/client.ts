@@ -5,7 +5,9 @@ import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
 import type { SessionInfo, Message, Attachment } from "../types.js";
 
-const BROKER_SOCKET = getBrokerSocketPath();
+function getCurrentBrokerSocketPath(): string {
+  return getBrokerSocketPath();
+}
 
 interface SendOptions {
   text: string;
@@ -155,7 +157,7 @@ export class IntercomClient extends EventEmitter {
     }
 
     return new Promise((resolve, reject) => {
-      const socket = net.connect(BROKER_SOCKET);
+      const socket = net.connect(getCurrentBrokerSocketPath());
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;

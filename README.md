@@ -50,7 +50,7 @@ Coordinate with other local pi sessions on related codebases. Use `/skill:pi-int
 
 A session becomes intercom-connected when all of these are true:
 - the `pi-intercom` extension is installed and loaded in that session
-- `enabled` is not set to `false` in `~/.pi/agent/intercom/config.json`
+- `enabled` is not set to `false` in `$PI_CODING_AGENT_DIR/intercom/config.json` (defaults to `~/.pi/agent/intercom/config.json`)
 - the session has started or reloaded after the extension was installed
 - the local broker is running or can be auto-started
 
@@ -359,7 +359,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ## Config
 
-Create `~/.pi/agent/intercom/config.json`:
+Create `$PI_CODING_AGENT_DIR/intercom/config.json` (or `~/.pi/agent/intercom/config.json` when `PI_CODING_AGENT_DIR` is unset):
 
 ```json
 {
@@ -424,7 +424,7 @@ Messages use length-prefixed JSON over a local socket/pipe transport (4-byte len
 
 Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if the session shuts down or reloads before it settles.
 
-Runtime files live at `~/.pi/agent/intercom/`:
+Runtime files live at `$PI_CODING_AGENT_DIR/intercom/` (default `~/.pi/agent/intercom/`):
 - `broker.sock` — Unix domain socket for communication (macOS/Linux only; Windows uses a named pipe instead)
 - `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
 - `broker.pid` — Broker process ID
@@ -453,7 +453,7 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 ## File Structure
 
 ```
-~/.pi/agent/extensions/pi-intercom/
+$PI_CODING_AGENT_DIR/extensions/pi-intercom/  # defaults to ~/.pi/agent/extensions/pi-intercom/
 ├── package.json
 ├── index.ts              # Extension entry point
 ├── types.ts              # SessionInfo, Message, protocol types

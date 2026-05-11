@@ -2,15 +2,28 @@ import { spawn } from "child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { homedir } from "os";
 import net from "net";
+import { getIntercomDir } from "../profile.js";
 import { getBrokerSocketPath } from "./paths.js";
 
-const INTERCOM_DIR = join(homedir(), ".pi/agent/intercom");
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
-const BROKER_SOCKET = getBrokerSocketPath();
-const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
-const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
+
+interface BrokerRuntimePaths {
+  intercomDir: string;
+  socket: string;
+  pid: string;
+  spawnLock: string;
+}
+
+function getBrokerRuntimePaths(): BrokerRuntimePaths {
+  const intercomDir = getIntercomDir();
+  return {
+    intercomDir,
+    socket: getBrokerSocketPath(),
+    pid: join(intercomDir, "broker.pid"),
+    spawnLock: join(intercomDir, "broker.spawn.lock"),
+  };
+}
 
 type BrokerLaunchSpec =
   | {
@@ -38,7 +51,7 @@ function quoteWindowsArg(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-export function getWindowsHiddenLauncherPath(intercomDir: string = INTERCOM_DIR): string {
+export function getWindowsHiddenLauncherPath(intercomDir: string = getIntercomDir()): string {
   return join(intercomDir, "broker-launch.vbs");
 }
 
@@ -87,7 +100,7 @@ export function getBrokerLaunchSpec(
   brokerArgs: string[],
   extensionDir: string = EXTENSION_DIR,
   platform: NodeJS.Platform = process.platform,
-  intercomDir: string = INTERCOM_DIR,
+  intercomDir: string = getIntercomDir(),
   nodePath: string = process.execPath,
 ): BrokerLaunchSpec {
   if (platform === "win32") {
@@ -129,25 +142,26 @@ function toError(error: unknown): Error {
 }
 
 export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: string[]): Promise<void> {
-  mkdirSync(INTERCOM_DIR, { recursive: true });
+  const paths = getBrokerRuntimePaths();
+  mkdirSync(paths.intercomDir, { recursive: true });
 
-  if (await isBrokerRunning()) {
+  if (await isBrokerRunning(paths)) {
     return;
   }
 
-  const ownsLock = acquireSpawnLock();
+  const ownsLock = acquireSpawnLock(paths.spawnLock);
   if (!ownsLock) {
-    await waitForBroker();
+    await waitForBroker(paths);
     return;
   }
 
   try {
-    if (await isBrokerRunning()) {
+    if (await isBrokerRunning(paths)) {
       return;
     }
 
     const brokerPath = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
-    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
+    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, EXTENSION_DIR, process.platform, paths.intercomDir);
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
@@ -179,7 +193,7 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
 
       child.once("error", onError);
       child.once("exit", onExit);
-      waitForBroker().then(() => {
+      waitForBroker(paths).then(() => {
         cleanup();
         resolve();
       }, (error) => {
@@ -188,31 +202,31 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
       });
     });
   } finally {
-    releaseSpawnLock();
+    releaseSpawnLock(paths.spawnLock);
   }
 }
 
-async function isBrokerRunning(): Promise<boolean> {
-  if (await checkSocketConnectable()) {
+async function isBrokerRunning(paths: BrokerRuntimePaths = getBrokerRuntimePaths()): Promise<boolean> {
+  if (await checkSocketConnectable(paths.socket)) {
     return true;
   }
 
-  if (!existsSync(BROKER_PID)) return false;
+  if (!existsSync(paths.pid)) return false;
 
   try {
-    const pid = parseInt(readFileSync(BROKER_PID, "utf-8").trim(), 10);
+    const pid = parseInt(readFileSync(paths.pid, "utf-8").trim(), 10);
     if (!Number.isFinite(pid)) return false;
     process.kill(pid, 0);
-    return checkSocketConnectable();
+    return checkSocketConnectable(paths.socket);
   } catch {
     // Missing or unreadable PID state means there is no live broker to reuse.
     return false;
   }
 }
 
-function checkSocketConnectable(): Promise<boolean> {
+function checkSocketConnectable(socketPath: string = getBrokerSocketPath()): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = net.connect(BROKER_SOCKET);
+    const socket = net.connect(socketPath);
     const finish = (isConnected: boolean) => {
       clearTimeout(timeout);
       socket.off("connect", onConnect);
@@ -236,19 +250,19 @@ function checkSocketConnectable(): Promise<boolean> {
   });
 }
 
-function acquireSpawnLock(): boolean {
+function acquireSpawnLock(spawnLockPath: string = join(getIntercomDir(), "broker.spawn.lock")): boolean {
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      writeFileSync(BROKER_SPAWN_LOCK, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
+      writeFileSync(spawnLockPath, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
       return true;
     } catch (error) {
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
-      if (isSpawnLockStale()) {
+      if (isSpawnLockStale(spawnLockPath)) {
         try {
-          unlinkSync(BROKER_SPAWN_LOCK);
+          unlinkSync(spawnLockPath);
         } catch {
           // If we can't delete the stale lock, retry a few times before giving up
         }
@@ -260,13 +274,13 @@ function acquireSpawnLock(): boolean {
   return false;
 }
 
-function isSpawnLockStale(): boolean {
-  if (!existsSync(BROKER_SPAWN_LOCK)) {
+function isSpawnLockStale(spawnLockPath: string = join(getIntercomDir(), "broker.spawn.lock")): boolean {
+  if (!existsSync(spawnLockPath)) {
     return false;
   }
 
   try {
-    const [pidLine = "", createdAtLine = "0"] = readFileSync(BROKER_SPAWN_LOCK, "utf-8").trim().split("\n");
+    const [pidLine = "", createdAtLine = "0"] = readFileSync(spawnLockPath, "utf-8").trim().split("\n");
     const pid = Number.parseInt(pidLine, 10);
     const createdAt = Number.parseInt(createdAtLine, 10);
     const ageMs = Date.now() - createdAt;
@@ -287,18 +301,18 @@ function isSpawnLockStale(): boolean {
   }
 }
 
-function releaseSpawnLock(): void {
+function releaseSpawnLock(spawnLockPath: string = join(getIntercomDir(), "broker.spawn.lock")): void {
   try {
-    unlinkSync(BROKER_SPAWN_LOCK);
+    unlinkSync(spawnLockPath);
   } catch {
     // Another cleanup path may already have removed the lock.
   }
 }
 
-async function waitForBroker(timeoutMs = 5000): Promise<void> {
+async function waitForBroker(paths: BrokerRuntimePaths = getBrokerRuntimePaths(), timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await checkSocketConnectable()) {
+    if (await checkSocketConnectable(paths.socket)) {
       return;
     }
     await sleep(100);
