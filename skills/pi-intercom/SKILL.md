@@ -152,6 +152,8 @@ intercom({ action: "reply", message: "Use the stable v2 API." })
 
 This works because `reply` resolves the correct sender and message ID automatically.
 
+If you expect a child to need live decisions while it is running, prefer an async/background `pi-subagents` launch. Blocking `need_decision` and `interview_request` escalations require a live reply path; foreground children fail fast there and should return blockers in their final result instead. `progress_update` remains non-blocking in either mode.
+
 **Three types of escalations to expect:**
 
 | Type | What it means | How to respond |
@@ -190,7 +192,9 @@ intercom({ action: "reply", to: "subagent-worker-78f659a3-1", message: "Use the 
 **Important:** Only sessions where `pi-subagents` supplied child bridge metadata
 get the `contact_supervisor` tool. Normal sessions use the regular `intercom`
 tool. If you see the formatted supervisor decision/progress update message, treat
-it as a `contact_supervisor` escalation.
+it as a `contact_supervisor` escalation. If the child exits before you reply, the
+ask expires; use `pending`/`reply` to see that state and follow up through the
+completed child session or artifact path instead.
 
 ## Key Differences
 

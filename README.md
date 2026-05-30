@@ -229,6 +229,12 @@ This workflow requires [`pi-subagents`](https://github.com/nicobailon/pi-subagen
 
 If any are missing, the session falls back to the regular `intercom` tool.
 
+### Foreground vs Async Child Sessions
+
+Blocking supervisor contact requires a live reply path. `pi-subagents` async/background launches provide that path, so `need_decision` and `interview_request` can wait for your reply. Foreground launches mark the reply path unavailable instead: blocking asks fail fast before any intercom message is sent, while `progress_update` and other non-blocking sends still work.
+
+If you expect a child to need decisions while it is running, launch it async/background. If a foreground child still gets blocked, have it return the blocker in its final result instead of trying to wait through `contact_supervisor` or `intercom({ action: "ask" })`.
+
 ### Three Reasons
 
 | Reason | Behavior | Use When |
@@ -291,7 +297,7 @@ Child index: 0
 Which API should I use?
 ```
 
-Reply hints work the same as regular `intercom` ask/reply flows. The supervisor can reply with `intercom({ action: "reply", message: "..." })` and the subagent receives the answer as the tool result.
+Reply hints work the same as regular `intercom` ask/reply flows. The supervisor can reply with `intercom({ action: "reply", message: "..." })` and the subagent receives the answer as the tool result. If the child completes or disconnects before you reply, the pending ask expires and `pending`/`reply` tell you to use the completed child session or artifact path for follow-up instead of sending into a dead session.
 
 For `interview_request`, the supervisor message includes the structured questions plus a fenced JSON answer example using this stable shape:
 
@@ -328,9 +334,9 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 | `message` | string | The decision request, optional interview note, or progress update |
 | `interview` | object | Required for `interview_request`: `{ title?, description?, questions: [...] }` |
 
-**`need_decision`** — Sends a formatted ask to the supervisor and blocks until it replies (10-minute timeout). The reply comes back as the tool result. Includes run metadata in the message so the supervisor knows which subagent is asking.
+**`need_decision`** — Sends a formatted ask to the supervisor and blocks until it replies (10-minute timeout) when the child has a live reply path. Async/background subagents get that live path; foreground children fail fast here and should return blockers in their final result instead. Includes run metadata in the message so the supervisor knows which subagent is asking.
 
-**`interview_request`** — Sends a formatted, agent-readable interview to the supervisor and blocks until it replies. Questions use a local pi-interview-like shape: `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info`. `info` questions are context-only and do not need responses. The supervisor reply should be JSON with `{ "responses": [{ "id": "...", "value": ... }] }`. Parsed JSON replies are returned in `details.structuredReply`.
+**`interview_request`** — Sends a formatted, agent-readable interview to the supervisor and blocks until it replies when the child has a live reply path. Foreground children fail fast here just like `need_decision`, so they should report blockers in their final result instead of waiting. Questions use a local pi-interview-like shape: `{ id, type, question, options?, context? }` where `type` is `single`, `multi`, `text`, `image`, or `info`. `info` questions are context-only and do not need responses. The supervisor reply should be JSON with `{ "responses": [{ "id": "...", "value": ... }] }`. Parsed JSON replies are returned in `details.structuredReply`.
 
 **`progress_update`** — Sends a non-blocking update to the supervisor. Returns immediately after delivery. Use only for meaningful progress or unexpected discoveries that change the plan.
 

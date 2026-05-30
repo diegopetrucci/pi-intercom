@@ -15,6 +15,7 @@ const childEnvKeys = [
   "PI_SUBAGENT_CHILD_AGENT",
   "PI_SUBAGENT_CHILD_INDEX",
   "PI_SUBAGENT_INTERCOM_SESSION_NAME",
+  "PI_SUBAGENT_BLOCKING_SUPERVISOR_REPLY_PATH",
 ] as const;
 const sharedHomeDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-home-"));
 const previousHome = process.env.HOME;
@@ -67,6 +68,7 @@ async function withChildOrchestratorEnv<T>(metadata: {
   agent?: string;
   index?: string;
   sessionName?: string;
+  blockingSupervisorReplyPath?: "live" | "unavailable";
 }, fn: () => T | Promise<T>): Promise<T> {
   const previous = new Map<string, string | undefined>();
   for (const key of childEnvKeys) {
@@ -78,6 +80,7 @@ async function withChildOrchestratorEnv<T>(metadata: {
   if (metadata.agent !== undefined) process.env.PI_SUBAGENT_CHILD_AGENT = metadata.agent;
   if (metadata.index !== undefined) process.env.PI_SUBAGENT_CHILD_INDEX = metadata.index;
   if (metadata.sessionName !== undefined) process.env.PI_SUBAGENT_INTERCOM_SESSION_NAME = metadata.sessionName;
+  if (metadata.blockingSupervisorReplyPath !== undefined) process.env.PI_SUBAGENT_BLOCKING_SUPERVISOR_REPLY_PATH = metadata.blockingSupervisorReplyPath;
   try {
     return await fn();
   } finally {
@@ -251,6 +254,32 @@ function waitForReply(client: InstanceType<typeof IntercomClient>, replyTo: stri
     };
     client.on("message", handler);
   });
+}
+
+async function expectNoMessage(client: InstanceType<typeof IntercomClient>, action: () => Promise<void>, waitMs = 150): Promise<void> {
+  let messageCount = 0;
+  const handler = () => {
+    messageCount += 1;
+  };
+  client.on("message", handler);
+  try {
+    await action();
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  } finally {
+    client.off("message", handler);
+  }
+  assert.equal(messageCount, 0, `Expected no intercom message, saw ${messageCount}`);
+}
+
+async function waitForCondition(check: () => boolean, description: string, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${description}`);
 }
 
 async function waitForSessionByName(client: InstanceType<typeof IntercomClient>, name: string): Promise<SessionInfo> {
@@ -599,7 +628,7 @@ test("supervisor tool registers only when child metadata is present", async () =
 
 test("child supervisor tool resolves target and includes run metadata", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
-  const { orchestrator, cleanup } = await setupClients();
+  const { planner, orchestrator, cleanup } = await setupClients();
 
   try {
     await withChildOrchestratorEnv({
@@ -608,12 +637,14 @@ test("child supervisor tool resolves target and includes run metadata", { concur
       agent: "worker",
       index: "0",
       sessionName: "subagent-worker-78f659a3-1",
+      blockingSupervisorReplyPath: "live",
     }, async () => {
       const harness = createExtensionHarness("subagent-worker-78f659a3-1");
       piIntercomExtension(harness.pi as never);
       await harness.emitLifecycle("session_start");
 
       const supervisorTool = harness.tools.find((tool) => tool.name === "contact_supervisor")!;
+      const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
 
       const askReceived = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
       const askResultPromise = supervisorTool.execute("ask-1", { reason: "need_decision", message: "Which API should I use?" }, new AbortController().signal, undefined, harness.ctx);
@@ -624,6 +655,13 @@ test("child supervisor tool resolves target and includes run metadata", { concur
       assert.match(askMessage.content.text, /Agent: worker/);
       assert.match(askMessage.content.text, /Child index: 0/);
       assert.match(askMessage.content.text, /Which API should I use\?/);
+      assert.deepEqual(askMessage.subagent, {
+        runId: "78f659a3",
+        agent: "worker",
+        index: "0",
+        sessionName: "subagent-worker-78f659a3-1",
+        capabilities: { blockingSupervisorReplyPath: "live" },
+      });
 
       const reply = await orchestrator.send(askFrom.id, { text: "Use the stable API.", replyTo: askMessage.id });
       assert.equal(reply.delivered, true);
@@ -639,7 +677,19 @@ test("child supervisor tool resolves target and includes run metadata", { concur
       assert.match(updateMessage.content.text, /Run: 78f659a3/);
       assert.match(updateMessage.content.text, /Agent: worker/);
       assert.match(updateMessage.content.text, /Found a schema mismatch/);
+      assert.equal(updateMessage.subagent?.capabilities?.blockingSupervisorReplyPath, "live");
       assert.equal(updateResult.isError, false);
+
+      const liveAskReceived = once(planner, "message") as Promise<[SessionInfo, Message]>;
+      const liveAskResultPromise = intercomTool.execute("generic-ask-live", { action: "ask", to: "planner", message: "Can you verify the live reply path?" }, new AbortController().signal, undefined, harness.ctx);
+      const [liveAskFrom, liveAskMessage] = await liveAskReceived;
+      assert.equal(liveAskMessage.expectsReply, true);
+      assert.equal(liveAskMessage.subagent?.capabilities?.blockingSupervisorReplyPath, "live");
+      const liveAskReply = await planner.send(liveAskFrom.id, { text: "Live path verified.", replyTo: liveAskMessage.id });
+      assert.equal(liveAskReply.delivered, true);
+      const liveAskResult = await liveAskResultPromise;
+      assert.equal(liveAskResult.isError, false);
+      assert.match(liveAskResult.content[0]?.text ?? "", /Live path verified/);
 
       const interviewReceived = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
       const interview = {
@@ -740,6 +790,147 @@ test("child supervisor tool rejects invalid reasons and interview payloads", asy
     assert.equal(invalidInfoOptionsResult.isError, true);
     assert.match(invalidInfoOptionsResult.content[0]?.text ?? "", /options is only valid for single and multi questions/);
   });
+});
+
+test("child blocking asks fail fast without a live supervisor reply path while non-blocking sends still work", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+
+  try {
+    await withChildOrchestratorEnv({
+      orchestratorTarget: "orchestrator",
+      runId: "78f659a3",
+      agent: "worker",
+      index: "0",
+      sessionName: "subagent-worker-78f659a3-1",
+      blockingSupervisorReplyPath: "unavailable",
+    }, async () => {
+      const harness = createExtensionHarness("subagent-worker-78f659a3-1");
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      const supervisorTool = harness.tools.find((tool) => tool.name === "contact_supervisor")!;
+      const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+
+      await expectNoMessage(orchestrator, async () => {
+        const result = await supervisorTool.execute("ask-unavailable", { reason: "need_decision", message: "Which API should I use?" }, new AbortController().signal, undefined, harness.ctx);
+        assert.equal(result.isError, true);
+        assert.match(result.content[0]?.text ?? "", /Blocking supervisor replies are unavailable in this child session/);
+        assert.match(result.content[0]?.text ?? "", /contact_supervisor\(\{ reason: "progress_update"/);
+      });
+
+      await expectNoMessage(orchestrator, async () => {
+        const result = await supervisorTool.execute("interview-unavailable", {
+          reason: "interview_request",
+          interview: {
+            title: "Blocked migration",
+            questions: [{ id: "api", type: "single", question: "Which API should I use?", options: ["Stable", "Experimental"] }],
+          },
+        }, new AbortController().signal, undefined, harness.ctx);
+        assert.equal(result.isError, true);
+        assert.match(result.content[0]?.text ?? "", /Blocking supervisor replies are unavailable in this child session/);
+      });
+
+      const updateReceived = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
+      const updateResultPromise = supervisorTool.execute("update-unavailable", { reason: "progress_update", message: "Still investigating the blocker." }, new AbortController().signal, undefined, harness.ctx);
+      const [_updateFrom, updateMessage] = await updateReceived;
+      assert.equal(updateMessage.expectsReply, undefined);
+      assert.equal(updateMessage.subagent?.capabilities?.blockingSupervisorReplyPath, "unavailable");
+      const updateResult = await updateResultPromise;
+      assert.equal(updateResult.isError, false);
+
+      await expectNoMessage(planner, async () => {
+        const result = await intercomTool.execute("generic-ask-unavailable", { action: "ask", to: "planner", message: "Can you verify this?" }, new AbortController().signal, undefined, harness.ctx);
+        assert.equal(result.isError, true);
+        assert.match(result.content[0]?.text ?? "", /Blocking intercom asks are unavailable in this child session/);
+      });
+
+      const sendReceived = once(planner, "message") as Promise<[SessionInfo, Message]>;
+      const sendResultPromise = intercomTool.execute("generic-send-unavailable", { action: "send", to: "planner", message: "FYI: I can only send non-blocking updates right now." }, new AbortController().signal, undefined, harness.ctx);
+      const [_sendFrom, sendMessage] = await sendReceived;
+      assert.equal(sendMessage.expectsReply, undefined);
+      assert.equal(sendMessage.subagent?.capabilities?.blockingSupervisorReplyPath, "unavailable");
+      const sendResult = await sendResultPromise;
+      assert.equal(sendResult.isError, false);
+
+      await harness.emitLifecycle("session_shutdown");
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("child generic intercom ask returns the unavailable-reply-path blocker before connecting", async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+
+  await withChildOrchestratorEnv({
+    orchestratorTarget: "orchestrator",
+    runId: "78f659a3",
+    agent: "worker",
+    index: "0",
+    sessionName: "subagent-worker-78f659a3-1",
+    blockingSupervisorReplyPath: "unavailable",
+  }, async () => {
+    const harness = createExtensionHarness("subagent-worker-78f659a3-1");
+    piIntercomExtension(harness.pi as never);
+    const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+
+    const result = await intercomTool.execute("generic-ask-unavailable-no-connect", {
+      action: "ask",
+      to: "planner",
+      message: "Can you verify this?",
+    }, new AbortController().signal, undefined, harness.ctx);
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? "", /Blocking intercom asks are unavailable in this child session/);
+    assert.doesNotMatch(result.content[0]?.text ?? "", /Intercom not connected/);
+  });
+});
+
+test("legacy child metadata without reply-path capability preserves blocking asks", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+
+  try {
+    await withChildOrchestratorEnv({
+      orchestratorTarget: "orchestrator",
+      runId: "78f659a3",
+      agent: "worker",
+      index: "0",
+      sessionName: "subagent-worker-78f659a3-1",
+    }, async () => {
+      const harness = createExtensionHarness("subagent-worker-78f659a3-1");
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      const supervisorTool = harness.tools.find((tool) => tool.name === "contact_supervisor")!;
+      const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+
+      const supervisorAskReceived = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
+      const supervisorAskResultPromise = supervisorTool.execute("legacy-supervisor-ask", { reason: "need_decision", message: "Should I keep the legacy compatibility path?" }, new AbortController().signal, undefined, harness.ctx);
+      const [supervisorAskFrom, supervisorAskMessage] = await supervisorAskReceived;
+      assert.equal(supervisorAskMessage.expectsReply, true);
+      assert.equal(supervisorAskMessage.subagent?.capabilities?.blockingSupervisorReplyPath, undefined);
+      const supervisorAskReply = await orchestrator.send(supervisorAskFrom.id, { text: "Yes, keep it for now.", replyTo: supervisorAskMessage.id });
+      assert.equal(supervisorAskReply.delivered, true);
+      const supervisorAskResult = await supervisorAskResultPromise;
+      assert.equal(supervisorAskResult.isError, false);
+      assert.match(supervisorAskResult.content[0]?.text ?? "", /keep it for now/);
+
+      const intercomAskReceived = once(planner, "message") as Promise<[SessionInfo, Message]>;
+      const intercomAskResultPromise = intercomTool.execute("legacy-intercom-ask", { action: "ask", to: "planner", message: "Can you sanity-check this fallback?" }, new AbortController().signal, undefined, harness.ctx);
+      const [intercomAskFrom, intercomAskMessage] = await intercomAskReceived;
+      assert.equal(intercomAskMessage.expectsReply, true);
+      assert.equal(intercomAskMessage.subagent?.capabilities?.blockingSupervisorReplyPath, undefined);
+      const intercomAskReply = await planner.send(intercomAskFrom.id, { text: "Fallback looks safe.", replyTo: intercomAskMessage.id });
+      assert.equal(intercomAskReply.delivered, true);
+      const intercomAskResult = await intercomAskResultPromise;
+      assert.equal(intercomAskResult.isError, false);
+      assert.match(intercomAskResult.content[0]?.text ?? "", /Fallback looks safe/);
+
+      await harness.emitLifecycle("session_shutdown");
+    });
+  } finally {
+    await cleanup();
+  }
 });
 
 test("child supervisor tool preserves delivery failure reasons", { concurrency: false }, async () => {
@@ -968,6 +1159,72 @@ test("async ask can be replied to later from the single pending ask fallback", {
     assert.equal(reply.message.content.text, "Answering later worked.");
     assert.equal(reply.message.replyTo, askId);
   } finally {
+    await cleanup();
+  }
+});
+
+test("child asks become expired and non-replyable after the child session exits", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+  const child = new IntercomClient();
+  const harness = createExtensionHarness("orchestrator-worker");
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+
+    await child.connect({
+      name: "subagent-worker-78f659a3-1",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    });
+
+    const supervisorSession = await waitForSessionByName(planner, "orchestrator-worker");
+    const delivered = await child.send(supervisorSession.id, {
+      messageId: "child-ask-1",
+      text: "Need a supervisor decision before I continue.",
+      expectsReply: true,
+      subagent: {
+        runId: "78f659a3",
+        agent: "worker",
+        index: "0",
+        sessionName: "subagent-worker-78f659a3-1",
+        capabilities: { blockingSupervisorReplyPath: "live" },
+      },
+    });
+    assert.equal(delivered.delivered, true);
+
+    await waitForCondition(() => harness.sentMessages.length === 1, "the supervisor intercom card");
+
+    await child.disconnect();
+    await waitForCondition(() => {
+      const details = harness.sentMessages[0]?.message.details as { replyCommand?: string; bodyText?: string; message?: { expectsReply?: boolean } } | undefined;
+      return details?.replyCommand === undefined && details?.message?.expectsReply === false;
+    }, "the child ask to expire");
+
+    const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+    const pendingResult = await intercomTool.execute("pending-expired-child", { action: "pending" }, new AbortController().signal, undefined, harness.ctx);
+    assert.equal(pendingResult.isError, false);
+    assert.match(pendingResult.content[0]?.text ?? "", /Expired asks/);
+    assert.match(pendingResult.content[0]?.text ?? "", /subagent-worker-78f659a3-1/);
+    assert.match(pendingResult.content[0]?.text ?? "", /completed child session\/artifact path/);
+
+    const replyResult = await intercomTool.execute("reply-expired-child", { action: "reply", message: "Use the stable API." }, new AbortController().signal, undefined, harness.ctx);
+    assert.equal(replyResult.isError, true);
+    assert.match(replyResult.content[0]?.text ?? "", /Reply to "subagent-worker-78f659a3-1" expired/);
+    assert.doesNotMatch(replyResult.content[0]?.text ?? "", /Session not found/);
+
+    const details = harness.sentMessages[0]?.message.details as { replyCommand?: string; bodyText?: string; message?: { expectsReply?: boolean } } | undefined;
+    assert.equal(details?.replyCommand, undefined);
+    assert.equal(details?.message?.expectsReply, false);
+    assert.match(details?.bodyText ?? "", /Reply expired:/);
+    assert.match(details?.bodyText ?? "", /completed child session\/artifact path/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await child.disconnect().catch(() => undefined);
     await cleanup();
   }
 });

@@ -8,8 +8,14 @@ import { SessionListOverlay } from "./ui/session-list.ts";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.ts";
 import { InlineMessageComponent } from "./ui/inline-message.ts";
 import { loadConfig, type IntercomConfig } from "./config.ts";
-import type { SessionInfo, Message, Attachment } from "./types.ts";
-import { ReplyTracker } from "./reply-tracker.ts";
+import type {
+  Attachment,
+  BlockingSupervisorReplyPathCapability,
+  Message,
+  SessionInfo,
+  SubagentIntercomMetadata,
+} from "./types.ts";
+import { ReplyTracker, type IntercomContext } from "./reply-tracker.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -22,20 +28,20 @@ const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";
 const SUBAGENT_CHILD_AGENT_ENV = "PI_SUBAGENT_CHILD_AGENT";
 const SUBAGENT_CHILD_INDEX_ENV = "PI_SUBAGENT_CHILD_INDEX";
 const SUBAGENT_INTERCOM_SESSION_NAME_ENV = "PI_SUBAGENT_INTERCOM_SESSION_NAME";
+const SUBAGENT_BLOCKING_SUPERVISOR_REPLY_PATH_ENV = "PI_SUBAGENT_BLOCKING_SUPERVISOR_REPLY_PATH";
 
-interface ChildOrchestratorMetadata {
+interface ChildOrchestratorMetadata extends SubagentIntercomMetadata {
   orchestratorTarget: string;
-  runId: string;
-  agent: string;
-  index: string;
-  sessionName?: string;
 }
 
 interface InboundMessageEntry {
   from: SessionInfo;
   message: Message;
+  context: IntercomContext;
   replyCommand?: string;
+  baseBodyText: string;
   bodyText: string;
+  replyExpiredReason?: string;
 }
 
 type ContactSupervisorReason = "need_decision" | "progress_update" | "interview_request";
@@ -76,6 +82,20 @@ function formatAttachments(attachments: Attachment[]): string {
   }
   return text;
 }
+function parseBlockingSupervisorReplyPathCapability(value: string | undefined): BlockingSupervisorReplyPathCapability | undefined {
+  return value === "live" || value === "unavailable" ? value : undefined;
+}
+
+function toSubagentIntercomMetadata(metadata: ChildOrchestratorMetadata): SubagentIntercomMetadata {
+  return {
+    runId: metadata.runId,
+    agent: metadata.agent,
+    index: metadata.index,
+    ...(metadata.sessionName ? { sessionName: metadata.sessionName } : {}),
+    ...(metadata.capabilities ? { capabilities: metadata.capabilities } : {}),
+  };
+}
+
 function readChildOrchestratorMetadata(): ChildOrchestratorMetadata | null {
   const orchestratorTarget = process.env[SUBAGENT_ORCHESTRATOR_TARGET_ENV]?.trim();
   const runId = process.env[SUBAGENT_RUN_ID_ENV]?.trim();
@@ -85,14 +105,29 @@ function readChildOrchestratorMetadata(): ChildOrchestratorMetadata | null {
     return null;
   }
   const sessionName = process.env[SUBAGENT_INTERCOM_SESSION_NAME_ENV]?.trim();
+  const blockingSupervisorReplyPath = parseBlockingSupervisorReplyPathCapability(process.env[SUBAGENT_BLOCKING_SUPERVISOR_REPLY_PATH_ENV]?.trim());
   return {
     orchestratorTarget,
     runId,
     agent,
     index,
     ...(sessionName ? { sessionName } : {}),
+    ...(blockingSupervisorReplyPath ? { capabilities: { blockingSupervisorReplyPath } } : {}),
   };
 }
+
+function isBlockingSupervisorReplyPathUnavailable(metadata: ChildOrchestratorMetadata | null | undefined): boolean {
+  // Preserve legacy behavior when older child metadata omitted this capability.
+  return metadata?.capabilities?.blockingSupervisorReplyPath === "unavailable";
+}
+
+function getBlockingReplyPathUnavailableMessage(kind: "contact_supervisor" | "intercom_ask"): string {
+  const blockedAction = kind === "contact_supervisor"
+    ? "Blocking supervisor replies are unavailable in this child session"
+    : "Blocking intercom asks are unavailable in this child session";
+  return `${blockedAction} because no live supervisor reply path was provided. Use contact_supervisor({ reason: "progress_update", ... }) or intercom({ action: "send", ... }) for a non-blocking update, or return the blocker in your final result.`;
+}
+
 function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", metadata: ChildOrchestratorMetadata, message: string): string {
   const heading = kind === "ask"
     ? "Subagent needs a supervisor decision."
@@ -108,6 +143,30 @@ function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", me
     "",
     message,
   ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function getReplyExpiryCopy(context: IntercomContext): { errorText: string; cardText: string } {
+  const senderDisplay = context.message.subagent?.sessionName || context.from.name || context.from.id.slice(0, 8);
+  if (context.message.subagent) {
+    return {
+      errorText: `Reply to "${senderDisplay}" expired because that child session has completed or is no longer reachable. Use the completed child session/artifact path from the subagent result for follow-up instead.`,
+      cardText: "Reply expired: this child session has completed or is no longer reachable. Use the completed child session/artifact path from the subagent result for follow-up instead.",
+    };
+  }
+  return {
+    errorText: `Reply to "${senderDisplay}" expired because the sender session is no longer connected.`,
+    cardText: "Reply expired: the sender session is no longer connected.",
+  };
+}
+
+function isReplyDeliveryExpiredReason(reason: string | undefined): boolean {
+  const normalized = reason?.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return normalized === "session not found"
+    || normalized.includes("disconnected")
+    || normalized.includes("not exist");
 }
 
 function validateSupervisorInterviewRequest(input: unknown): { ok: true; interview: SupervisorInterviewRequest } | { ok: false; error: string } {
@@ -428,6 +487,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let agentRunning = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
+  const inboundMessageEntries = new Map<string, InboundMessageEntry>();
   const pendingIdleMessages: InboundMessageEntry[] = [];
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
@@ -496,6 +556,39 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     clearTimeout(inboundFlushTimer);
     inboundFlushTimer = null;
+  }
+  function markEntryReplyExpired(entry: InboundMessageEntry): void {
+    if (entry.replyExpiredReason) {
+      return;
+    }
+    entry.replyExpiredReason = entry.context.replyExpiryReason ?? getReplyExpiryCopy(entry.context).errorText;
+    entry.replyCommand = undefined;
+    entry.message.expectsReply = false;
+    entry.bodyText = `⚠️ ${getReplyExpiryCopy(entry.context).cardText}\n\n${entry.baseBodyText}`;
+  }
+  function markContextsReplyExpired(contexts: IntercomContext[]): void {
+    contexts.forEach((context) => {
+      const entry = inboundMessageEntries.get(context.message.id);
+      if (entry) {
+        markEntryReplyExpired(entry);
+      }
+    });
+  }
+  function expireReplyContext(context: IntercomContext, now = Date.now()): string {
+    const { errorText } = getReplyExpiryCopy(context);
+    const expired = replyTracker.expireReply(context.message.id, errorText, now) ?? context;
+    markContextsReplyExpired([expired]);
+    return expired.replyExpiryReason ?? errorText;
+  }
+  async function reconcilePendingAskLiveness(activeClient: IntercomClient): Promise<void> {
+    try {
+      const sessions = await activeClient.listSessions();
+      const liveSessionIds = new Set(sessions.map((session) => session.id));
+      const expired = replyTracker.expireMissingSessions(liveSessionIds, (context) => getReplyExpiryCopy(context).errorText);
+      markContextsReplyExpired(expired);
+    } catch {
+      // Best-effort reconciliation only; reply and pending rendering can still fall back to delivery failures.
+    }
   }
   function getLiveContext(ctx: ExtensionContext | null = runtimeContext, generation = runtimeGeneration): ExtensionContext | null {
     if (disposed || shuttingDown || generation !== runtimeGeneration || !ctx) {
@@ -579,7 +672,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     if (delivery !== "followUp") {
-      replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
+      replyTracker.queueTurnContext(entry.context);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
     const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
@@ -659,8 +752,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const replyCommand = config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
-    replyTracker.recordIncomingMessage(from, message);
-    const entry = { from, message, replyCommand, bodyText };
+    const context = replyTracker.recordIncomingMessage(from, message);
+    const entry = { from, message, context, replyCommand, baseBodyText: bodyText, bodyText };
+    inboundMessageEntries.set(message.id, entry);
     void (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);
       if (!activeContext) {
@@ -699,6 +793,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       handleIncomingMessage(liveContext, from, message);
+    });
+    nextClient.on("session_left", (sessionId: string) => {
+      if (client !== nextClient) {
+        return;
+      }
+      const expired = replyTracker.expireRepliesFromSession(sessionId, (context) => getReplyExpiryCopy(context).errorText);
+      markContextsReplyExpired(expired);
     });
     nextClient.on("disconnected", (error: Error) => {
       if (client !== nextClient) {
@@ -948,6 +1049,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     clearReconnectTimer();
     rejectReplyWaiter(new Error("Session shutting down"));
     replyTracker.reset();
+    inboundMessageEntries.clear();
     pendingIdleMessages.length = 0;
     clearInboundFlushTimer();
     agentRunning = false;
@@ -1095,6 +1197,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           };
         }
         const supervisorInterview = interviewValidation?.ok === true ? interviewValidation.interview : undefined;
+        if ((reason === "need_decision" || reason === "interview_request") && isBlockingSupervisorReplyPathUnavailable(childOrchestratorMetadata)) {
+          const blockerMessage = getBlockingReplyPathUnavailableMessage("contact_supervisor");
+          return {
+            content: [{ type: "text", text: blockerMessage }],
+            isError: true,
+            details: { error: true, reason: blockerMessage },
+          };
+        }
 
         let connectedClient: IntercomClient;
         try {
@@ -1145,9 +1255,11 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
 
         if (reason === "progress_update") {
           const message = params.message as string;
+          const subagentMetadata = toSubagentIntercomMetadata(metadata);
           try {
             const result = await connectedClient.send(sendTo, {
               text: formatChildOrchestratorMessage("update", metadata, message),
+              subagent: subagentMetadata,
             });
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
@@ -1162,7 +1274,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
               message: { text: message, reason },
               messageId: result.id,
               timestamp: Date.now(),
-              subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
+              subagent: subagentMetadata,
             });
             return {
               content: [{ type: "text", text: `Progress update sent to supervisor ${metadata.orchestratorTarget}` }],
@@ -1207,10 +1319,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           const requestText = reason === "interview_request"
             ? formatChildOrchestratorMessage("interview", metadata, formatSupervisorInterviewRequest(supervisorInterview!, typeof params.message === "string" ? params.message : undefined))
             : formatChildOrchestratorMessage("ask", metadata, params.message as string);
+          const subagentMetadata = toSubagentIntercomMetadata(metadata);
           const sendResult = await connectedClient.send(sendTo, {
             messageId: questionId,
             text: requestText,
             expectsReply: true,
+            subagent: subagentMetadata,
           });
           if (!sendResult.delivered) {
             const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
@@ -1237,7 +1351,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
             },
             messageId: sendResult.id,
             timestamp: Date.now(),
-            subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
+            subagent: subagentMetadata,
           });
           const replyMessage = await replyPromise;
           const replyText = replyMessage.content.text;
@@ -1250,7 +1364,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
             message: { text: replyText, attachments: replyMessage.content.attachments },
             messageId: replyMessage.id,
             timestamp: replyMessage.timestamp,
-            subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
+            subagent: subagentMetadata,
           });
           return {
             content: [{ type: "text", text: `**Reply from supervisor:**\n${replyText}${replyAttachments}` }],
@@ -1349,6 +1463,27 @@ Usage:
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const { action, to, message, attachments, replyTo } = params;
+
+      if (action === "ask") {
+        if (!to || !message) {
+          return {
+            content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
+            isError: true,
+            details: { error: true },
+          };
+        }
+
+        if (isBlockingSupervisorReplyPathUnavailable(childOrchestratorMetadata)) {
+          const blockerMessage = getBlockingReplyPathUnavailableMessage("intercom_ask");
+          return {
+            content: [{ type: "text", text: blockerMessage }],
+            isError: true,
+            details: { error: true, reason: blockerMessage },
+          };
+        }
+      }
+
       let connectedClient: IntercomClient;
       try {
         connectedClient = await ensureConnected("tool");
@@ -1361,8 +1496,6 @@ Usage:
       }
 
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
-
-      const { action, to, message, attachments, replyTo } = params;
 
       switch (action) {
         case "list": {
@@ -1432,6 +1565,7 @@ Usage:
               text: message,
               attachments,
               replyTo,
+              ...(childOrchestratorMetadata ? { subagent: toSubagentIntercomMetadata(childOrchestratorMetadata) } : {}),
             });
             if (!result.delivered) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
@@ -1446,6 +1580,7 @@ Usage:
               message: { text: message, attachments, replyTo },
               messageId: result.id,
               timestamp: Date.now(),
+              ...(childOrchestratorMetadata ? { subagent: toSubagentIntercomMetadata(childOrchestratorMetadata) } : {}),
             });
             if (replyTo) {
               replyTracker.markReplied(replyTo);
@@ -1465,14 +1600,6 @@ Usage:
         }
 
         case "ask": {
-          if (!to || !message) {
-            return {
-              content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
-              isError: true,
-              details: { error: true },
-            };
-          }
-
           if (replyWaiter) {
             return {
               content: [{ type: "text", text: "Already waiting for a reply" }],
@@ -1514,6 +1641,7 @@ Usage:
               attachments,
               replyTo,
               expectsReply: true,
+              ...(childOrchestratorMetadata ? { subagent: toSubagentIntercomMetadata(childOrchestratorMetadata) } : {}),
             });
 
             if (!sendResult.delivered) {
@@ -1537,6 +1665,7 @@ Usage:
               message: { text: message, attachments, replyTo },
               messageId: sendResult.id,
               timestamp: Date.now(),
+              ...(childOrchestratorMetadata ? { subagent: toSubagentIntercomMetadata(childOrchestratorMetadata) } : {}),
             });
             const replyMessage = await replyPromise;
             const replyText = replyMessage.content.text;
@@ -1580,6 +1709,7 @@ Usage:
           }
 
           try {
+            await reconcilePendingAskLiveness(connectedClient);
             const target = replyTracker.resolveReplyTarget({ to });
             if (target.from.id === connectedClient.sessionId) {
               return {
@@ -1593,6 +1723,14 @@ Usage:
               replyTo: target.message.id,
             });
             if (!result.delivered) {
+              if (isReplyDeliveryExpiredReason(result.reason)) {
+                const expiredReason = expireReplyContext(target);
+                return {
+                  content: [{ type: "text", text: expiredReason }],
+                  isError: true,
+                  details: { messageId: result.id, delivered: false, reason: result.reason, expired: true },
+                };
+              }
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
                 content: [{ type: "text", text: `Reply to "${target.from.name || target.from.id}" was not delivered: ${errorText}` }],
@@ -1622,6 +1760,7 @@ Usage:
         }
 
         case "pending": {
+          await reconcilePendingAskLiveness(connectedClient);
           const pendingAsks = replyTracker.listPending();
           if (pendingAsks.length === 0) {
             return {
@@ -1631,13 +1770,27 @@ Usage:
           }
 
           const now = Date.now();
-          const lines = pendingAsks.map(({ from, message, receivedAt }) => {
+          const activeLines: string[] = [];
+          const expiredLines: string[] = [];
+          pendingAsks.forEach(({ from, message, receivedAt, replyState, replyExpiryReason }) => {
             const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
             const elapsedSeconds = Math.max(0, Math.floor((now - receivedAt) / 1000));
-            return `- ${from.name || from.id} · ${message.id} · ${elapsedSeconds}s ago · ${preview}`;
+            const line = `- ${from.name || from.id} · ${message.id} · ${elapsedSeconds}s ago · ${preview}`;
+            if (replyState === "expired") {
+              expiredLines.push(`${line} · expired · ${replyExpiryReason ?? "sender session unavailable"}`);
+            } else {
+              activeLines.push(line);
+            }
           });
+          const sections: string[] = [];
+          if (activeLines.length > 0) {
+            sections.push(`**Pending asks:**\n${activeLines.join("\n")}`);
+          }
+          if (expiredLines.length > 0) {
+            sections.push(`**Expired asks:**\n${expiredLines.join("\n")}`);
+          }
           return {
-            content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
+            content: [{ type: "text", text: sections.join("\n\n") }],
             isError: false,
           };
         }

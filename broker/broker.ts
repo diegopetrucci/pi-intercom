@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import { getIntercomDir } from "../profile.js";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
-import type { SessionInfo, Message, Attachment, BrokerMessage } from "../types.js";
+import type { SessionInfo, Message, Attachment, BlockingSupervisorReplyPathCapability, BrokerMessage, SubagentIntercomMetadata } from "../types.js";
 
 interface BrokerRuntimePaths {
   intercomDir: string;
@@ -49,6 +49,34 @@ function isAttachment(value: unknown): value is Attachment {
   return attachment.language === undefined || typeof attachment.language === "string";
 }
 
+function isBlockingSupervisorReplyPathCapability(value: unknown): value is BlockingSupervisorReplyPathCapability {
+  return value === "live" || value === "unavailable";
+}
+
+function isSubagentIntercomMetadata(value: unknown): value is SubagentIntercomMetadata {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const metadata = value as Record<string, unknown>;
+  if (typeof metadata.runId !== "string" || typeof metadata.agent !== "string" || typeof metadata.index !== "string") {
+    return false;
+  }
+  if (metadata.sessionName !== undefined && typeof metadata.sessionName !== "string") {
+    return false;
+  }
+  if (metadata.capabilities !== undefined) {
+    if (typeof metadata.capabilities !== "object" || metadata.capabilities === null || Array.isArray(metadata.capabilities)) {
+      return false;
+    }
+    const capabilities = metadata.capabilities as Record<string, unknown>;
+    if (capabilities.blockingSupervisorReplyPath !== undefined && !isBlockingSupervisorReplyPathCapability(capabilities.blockingSupervisorReplyPath)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isMessage(value: unknown): value is Message {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -65,6 +93,10 @@ function isMessage(value: unknown): value is Message {
   }
 
   if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") {
+    return false;
+  }
+
+  if (message.subagent !== undefined && !isSubagentIntercomMetadata(message.subagent)) {
     return false;
   }
 

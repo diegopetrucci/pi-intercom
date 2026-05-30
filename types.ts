@@ -9,11 +9,26 @@ export interface SessionInfo {
   status?: string;
 }
 
+export type BlockingSupervisorReplyPathCapability = "live" | "unavailable";
+
+export interface SubagentIntercomCapabilities {
+  blockingSupervisorReplyPath?: BlockingSupervisorReplyPathCapability;
+}
+
+export interface SubagentIntercomMetadata {
+  runId: string;
+  agent: string;
+  index: string;
+  sessionName?: string;
+  capabilities?: SubagentIntercomCapabilities;
+}
+
 export interface Message {
   id: string;
   timestamp: number;
   replyTo?: string;
   expectsReply?: boolean;
+  subagent?: SubagentIntercomMetadata;
   content: {
     text: string;
     attachments?: Attachment[];
