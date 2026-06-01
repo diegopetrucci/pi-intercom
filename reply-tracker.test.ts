@@ -84,6 +84,17 @@ test("default blocking reply timeout expires pending asks after two minutes", ()
   assert.deepEqual(tracker.listPending(1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS), []);
 });
 
+test("reply drops a queued current-turn ask once it times out before the turn starts", () => {
+  const tracker = new ReplyTracker();
+  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS);
+
+  assert.throws(() => tracker.resolveReplyTarget({}, 1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS), /No active intercom context to reply to/);
+  assert.deepEqual(tracker.listPending(1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS), []);
+});
+
 test("reply errors with the expiry reason after the sender session exits", () => {
   const tracker = new ReplyTracker();
   tracker.recordIncomingMessage(createSession("child-id", "subagent-worker"), createMessage("ask-1", "Need a decision"), 1000);

@@ -240,7 +240,7 @@ If you expect a child to need decisions while it is running, launch it async/bac
 | Reason | Behavior | Use When |
 |--------|----------|----------|
 | `need_decision` | Sends an ask and blocks until the supervisor replies (2-minute timeout by default) | The subagent is blocked, uncertain, needs approval, or faces a product/API/scope decision |
-| `interview_request` | Sends structured questions and blocks until the supervisor replies | The subagent needs multiple machine-readable answers from the supervisor in one exchange |
+| `interview_request` | Sends structured questions and blocks until the supervisor replies (2-minute timeout by default) | The subagent needs multiple machine-readable answers from the supervisor in one exchange |
 | `progress_update` | Fire-and-forget update to the supervisor | Meaningful progress or unexpected discoveries that change the plan |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.

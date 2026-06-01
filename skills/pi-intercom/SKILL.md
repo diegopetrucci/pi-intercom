@@ -201,7 +201,7 @@ completed child session or artifact path instead.
 | Action | Behavior | Use When |
 |--------|----------|----------|
 | `send` | Fire-and-forget | You don't need a response |
-| `ask` | Blocks until reply (2 min default timeout) | You need an answer to continue |
+| `ask` | Blocks until reply (2-minute default timeout) | You need an answer to continue |
 | `reply` | Responds to the active or pending inbound ask | You were asked something and need to answer naturally |
 | `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
 | `list` | Returns all sessions with live status | You need to discover targets or choose an idle peer |

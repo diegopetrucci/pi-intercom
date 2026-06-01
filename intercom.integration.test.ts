@@ -5,7 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter, once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { DEFAULT_BLOCKING_REPLY_TIMEOUT_MS, ReplyTracker } from "./reply-tracker.ts";
+import { DEFAULT_BLOCKING_REPLY_TIMEOUT_MS, DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT, ReplyTracker } from "./reply-tracker.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
 const repoDir = process.cwd();
@@ -1044,7 +1044,7 @@ test("blocking asks use the default two-minute timeout", { concurrency: false },
         assert.equal(supervisorAsk.expectsReply, true);
         const supervisorResult = await supervisorResultPromise;
         assert.equal(supervisorResult.isError, true);
-        assert.match(supervisorResult.content[0]?.text ?? "", /No reply from "orchestrator" within 2 minutes/);
+        assert.ok((supervisorResult.content[0]?.text ?? "").includes(`No reply from "orchestrator" within ${DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT}`));
 
         const intercomAskReceived = once(planner, "message") as Promise<[SessionInfo, Message]>;
         const intercomResultPromise = intercomTool.execute("generic-ask-timeout", { action: "ask", to: "planner", message: "Can you review this?" }, new AbortController().signal, undefined, harness.ctx);
@@ -1052,7 +1052,7 @@ test("blocking asks use the default two-minute timeout", { concurrency: false },
         assert.equal(plannerAsk.expectsReply, true);
         const intercomResult = await intercomResultPromise;
         assert.equal(intercomResult.isError, true);
-        assert.match(intercomResult.content[0]?.text ?? "", /No reply from "planner" within 2 minutes/);
+        assert.ok((intercomResult.content[0]?.text ?? "").includes(`No reply from "planner" within ${DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT}`));
 
         assert.ok(scheduledDelays.filter((delay) => delay === DEFAULT_BLOCKING_REPLY_TIMEOUT_MS).length >= 2);
       } finally {
