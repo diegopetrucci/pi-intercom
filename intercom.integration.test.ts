@@ -1105,82 +1105,44 @@ test("full ask/reply round-trip works with reply target resolved from current tu
 
 test("subagent control intercom events wake the current orchestrator session", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
-  const events = new EventEmitter();
-  const sentMessages: Array<{ message: { customType?: string; content?: string }; options?: { triggerTurn?: boolean } }> = [];
-  const pi = {
-    getSessionName: () => "orchestrator",
-    events: {
-      on: (channel: string, handler: (payload: unknown) => void) => {
-        events.on(channel, handler);
-        return () => events.off(channel, handler);
-      },
-      emit: (channel: string, payload: unknown) => events.emit(channel, payload),
-    },
-    on: () => undefined,
-    registerMessageRenderer: () => undefined,
-    registerTool: () => undefined,
-    registerCommand: () => undefined,
-    registerShortcut: () => undefined,
-    sendMessage: (message: { customType?: string; content?: string }, options?: { triggerTurn?: boolean }) => {
-      sentMessages.push({ message, options });
-    },
-    appendEntry: () => undefined,
-  };
+  const harness = createExtensionHarness("orchestrator");
 
-  piIntercomExtension(pi as never);
-  pi.events.emit("subagent:control-intercom", {
+  piIntercomExtension(harness.pi as never);
+  harness.pi.events.emit("subagent:control-intercom", {
     to: "orchestrator",
     message: "subagent needs attention\n\nworker needs attention in run 78f659a3.",
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0]?.message.customType, "intercom_message");
-  assert.match(sentMessages[0]?.message.content ?? "", /From subagent-control/);
-  assert.match(sentMessages[0]?.message.content ?? "", /worker needs attention in run 78f659a3/);
-  assert.equal(sentMessages[0]?.options?.triggerTurn, true);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+  assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-control/);
+  assert.match(harness.sentMessages[0]?.message.content ?? "", /worker needs attention in run 78f659a3/);
+  assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+  await assert.doesNotReject(() => harness.emitLifecycle("turn_start"));
 });
 
 test("subagent result intercom events wake the current orchestrator session", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
-  const events = new EventEmitter();
-  const sentMessages: Array<{ message: { customType?: string; content?: string }; options?: { triggerTurn?: boolean } }> = [];
   const deliveryAcks: unknown[] = [];
-  events.on("subagent:result-intercom-delivery", (payload) => deliveryAcks.push(payload));
-  const pi = {
-    getSessionName: () => "orchestrator",
-    events: {
-      on: (channel: string, handler: (payload: unknown) => void) => {
-        events.on(channel, handler);
-        return () => events.off(channel, handler);
-      },
-      emit: (channel: string, payload: unknown) => events.emit(channel, payload),
-    },
-    on: () => undefined,
-    registerMessageRenderer: () => undefined,
-    registerTool: () => undefined,
-    registerCommand: () => undefined,
-    registerShortcut: () => undefined,
-    sendMessage: (message: { customType?: string; content?: string }, options?: { triggerTurn?: boolean }) => {
-      sentMessages.push({ message, options });
-    },
-    appendEntry: () => undefined,
-  };
+  const harness = createExtensionHarness("orchestrator");
+  harness.pi.events.on("subagent:result-intercom-delivery", (payload) => deliveryAcks.push(payload));
 
-  piIntercomExtension(pi as never);
-  pi.events.emit("subagent:result-intercom", {
+  piIntercomExtension(harness.pi as never);
+  harness.pi.events.emit("subagent:result-intercom", {
     to: "orchestrator",
     requestId: "result-1",
     message: "subagent result\n\nRun: 78f659a3\nAgent: worker\nStatus: completed",
   });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0]?.message.customType, "intercom_message");
-  assert.match(sentMessages[0]?.message.content ?? "", /From subagent-result/);
-  assert.match(sentMessages[0]?.message.content ?? "", /Status: completed/);
-  assert.equal(sentMessages[0]?.options?.triggerTurn, true);
+  assert.equal(harness.sentMessages.length, 1);
+  assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+  assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-result/);
+  assert.match(harness.sentMessages[0]?.message.content ?? "", /Status: completed/);
+  assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
   assert.deepEqual(deliveryAcks, [{ requestId: "result-1", delivered: true }]);
+  await assert.doesNotReject(() => harness.emitLifecycle("turn_start"));
 });
 
 test("async ask can be replied to later from the single pending ask fallback", { concurrency: false }, async () => {
