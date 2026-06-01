@@ -1,5 +1,8 @@
 import type { Message, SessionInfo } from "./types.ts";
 
+export const DEFAULT_BLOCKING_REPLY_TIMEOUT_MS = 2 * 60 * 1000;
+export const DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT = "2 minutes";
+
 export interface IntercomContext {
   from: SessionInfo;
   message: Message;
@@ -30,7 +33,7 @@ export class ReplyTracker {
   private readonly pendingTurnContexts: IntercomContext[] = [];
   private currentTurnContext: IntercomContext | null = null;
 
-  constructor(private readonly askTimeoutMs = 10 * 60 * 1000) {}
+  constructor(private readonly askTimeoutMs = DEFAULT_BLOCKING_REPLY_TIMEOUT_MS) {}
 
   recordIncomingMessage(from: SessionInfo, message: Message, receivedAt = Date.now()): IntercomContext {
     const context: IntercomContext = {

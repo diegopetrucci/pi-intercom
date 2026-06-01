@@ -5,7 +5,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter, once } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { ReplyTracker } from "./reply-tracker.ts";
+import { DEFAULT_BLOCKING_REPLY_TIMEOUT_MS, ReplyTracker } from "./reply-tracker.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
 const repoDir = process.cwd();
@@ -1004,6 +1004,61 @@ test("child supervisor tool clears reply waiter when cancelled", { concurrency: 
       assert.equal(nextResult.isError, false);
       assert.match(nextResult.content[0]?.text ?? "", /Yes\./);
       await harness.emitLifecycle("session_shutdown");
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("blocking asks use the default two-minute timeout", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, orchestrator, cleanup } = await setupClients();
+
+  try {
+    await withChildOrchestratorEnv({
+      orchestratorTarget: "orchestrator",
+      runId: "78f659a3",
+      agent: "worker",
+      index: "0",
+      sessionName: "subagent-worker-78f659a3-1",
+      blockingSupervisorReplyPath: "live",
+    }, async () => {
+      const harness = createExtensionHarness("subagent-worker-78f659a3-1");
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      const supervisorTool = harness.tools.find((tool) => tool.name === "contact_supervisor")!;
+      const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
+      const originalSetTimeout = globalThis.setTimeout;
+      const scheduledDelays: number[] = [];
+
+      globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+        const delay = Number(timeout ?? 0);
+        scheduledDelays.push(delay);
+        return originalSetTimeout(handler, delay === DEFAULT_BLOCKING_REPLY_TIMEOUT_MS ? 0 : delay, ...args);
+      }) as typeof globalThis.setTimeout;
+
+      try {
+        const supervisorAskReceived = once(orchestrator, "message") as Promise<[SessionInfo, Message]>;
+        const supervisorResultPromise = supervisorTool.execute("ask-timeout", { reason: "need_decision", message: "Should I continue?" }, new AbortController().signal, undefined, harness.ctx);
+        const [_supervisorFrom, supervisorAsk] = await supervisorAskReceived;
+        assert.equal(supervisorAsk.expectsReply, true);
+        const supervisorResult = await supervisorResultPromise;
+        assert.equal(supervisorResult.isError, true);
+        assert.match(supervisorResult.content[0]?.text ?? "", /No reply from "orchestrator" within 2 minutes/);
+
+        const intercomAskReceived = once(planner, "message") as Promise<[SessionInfo, Message]>;
+        const intercomResultPromise = intercomTool.execute("generic-ask-timeout", { action: "ask", to: "planner", message: "Can you review this?" }, new AbortController().signal, undefined, harness.ctx);
+        const [_plannerFrom, plannerAsk] = await intercomAskReceived;
+        assert.equal(plannerAsk.expectsReply, true);
+        const intercomResult = await intercomResultPromise;
+        assert.equal(intercomResult.isError, true);
+        assert.match(intercomResult.content[0]?.text ?? "", /No reply from "planner" within 2 minutes/);
+
+        assert.ok(scheduledDelays.filter((delay) => delay === DEFAULT_BLOCKING_REPLY_TIMEOUT_MS).length >= 2);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        await harness.emitLifecycle("session_shutdown");
+      }
     });
   } finally {
     await cleanup();
