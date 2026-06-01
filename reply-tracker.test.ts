@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ReplyTracker } from "./reply-tracker.ts";
+import { DEFAULT_BLOCKING_REPLY_TIMEOUT_MS, ReplyTracker } from "./reply-tracker.ts";
 import type { Message, SessionInfo } from "./types.ts";
 
 function createSession(id: string, name: string): SessionInfo {
@@ -74,6 +74,25 @@ test("reply removes pending ask after successful reply", () => {
   tracker.markReplied("ask-1");
 
   assert.deepEqual(tracker.listPending(1001), []);
+});
+
+test("default blocking reply timeout expires pending asks after two minutes", () => {
+  const tracker = new ReplyTracker();
+  tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+
+  assert.equal(tracker.listPending(1000 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS).length, 1);
+  assert.deepEqual(tracker.listPending(1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS), []);
+});
+
+test("reply drops a queued current-turn ask once it times out before the turn starts", () => {
+  const tracker = new ReplyTracker();
+  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS);
+
+  assert.throws(() => tracker.resolveReplyTarget({}, 1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS), /No active intercom context to reply to/);
+  assert.deepEqual(tracker.listPending(1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS), []);
 });
 
 test("reply errors with the expiry reason after the sender session exits", () => {

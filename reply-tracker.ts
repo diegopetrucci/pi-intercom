@@ -1,5 +1,18 @@
 import type { Message, SessionInfo } from "./types.ts";
 
+export const DEFAULT_BLOCKING_REPLY_TIMEOUT_MS = 2 * 60 * 1000;
+
+export function formatBlockingReplyTimeout(timeoutMs: number): string {
+  if (timeoutMs % (60 * 1000) === 0) {
+    const minutes = timeoutMs / (60 * 1000);
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+
+  return `${timeoutMs}ms`;
+}
+
+export const DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT = formatBlockingReplyTimeout(DEFAULT_BLOCKING_REPLY_TIMEOUT_MS);
+
 export interface IntercomContext {
   from: SessionInfo;
   message: Message;
@@ -30,7 +43,7 @@ export class ReplyTracker {
   private readonly pendingTurnContexts: IntercomContext[] = [];
   private currentTurnContext: IntercomContext | null = null;
 
-  constructor(private readonly askTimeoutMs = 10 * 60 * 1000) {}
+  constructor(private readonly askTimeoutMs = DEFAULT_BLOCKING_REPLY_TIMEOUT_MS) {}
 
   recordIncomingMessage(from: SessionInfo, message: Message, receivedAt = Date.now()): IntercomContext {
     const context: IntercomContext = {
@@ -175,13 +188,24 @@ export class ReplyTracker {
   }
 
   private pruneExpired(now: number): void {
-    for (const [messageId, context] of this.pendingAsks) {
-      if (now - context.receivedAt > this.askTimeoutMs) {
-        this.pendingAsks.delete(messageId);
-        if (this.currentTurnContext?.message.id === messageId) {
-          this.currentTurnContext = null;
-        }
+    for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
+      if (this.hasTimedOut(this.pendingTurnContexts[index]!, now)) {
+        this.pendingTurnContexts.splice(index, 1);
       }
     }
+
+    if (this.currentTurnContext && this.hasTimedOut(this.currentTurnContext, now)) {
+      this.currentTurnContext = null;
+    }
+
+    for (const [messageId, context] of this.pendingAsks) {
+      if (this.hasTimedOut(context, now)) {
+        this.pendingAsks.delete(messageId);
+      }
+    }
+  }
+
+  private hasTimedOut(context: IntercomContext, now: number): boolean {
+    return context.message.expectsReply === true && now - context.receivedAt > this.askTimeoutMs;
   }
 }

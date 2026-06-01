@@ -5,7 +5,11 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ## [Unreleased]
 
 ### Changed
+- Default blocking reply timeouts for `intercom ask`, `contact_supervisor need_decision`, and `contact_supervisor interview_request` are now 2 minutes.
 - Resolve intercom config and broker runtime files from `PI_CODING_AGENT_DIR` when set, falling back to `~/.pi/agent` for normal Pi sessions.
+
+### Fixed
+- Expired incoming asks no longer remain replyable when they time out before the receiver's current turn starts.
 
 ## [0.6.0] - 2026-05-03
 

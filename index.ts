@@ -15,7 +15,12 @@ import type {
   SessionInfo,
   SubagentIntercomMetadata,
 } from "./types.ts";
-import { ReplyTracker, type IntercomContext } from "./reply-tracker.ts";
+import {
+  DEFAULT_BLOCKING_REPLY_TIMEOUT_MS,
+  DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT,
+  ReplyTracker,
+  type IntercomContext,
+} from "./reply-tracker.ts";
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -505,8 +510,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        rejectReplyWaiter(new Error(`No reply from "${from}" within 10 minutes`));
-      }, 10 * 60 * 1000);
+        rejectReplyWaiter(new Error(`No reply from "${from}" within ${DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT}`));
+      }, DEFAULT_BLOCKING_REPLY_TIMEOUT_MS);
       const cleanup = () => {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", onAbort);
