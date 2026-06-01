@@ -42,11 +42,16 @@ interface ChildOrchestratorMetadata extends SubagentIntercomMetadata {
 interface InboundMessageEntry {
   from: SessionInfo;
   message: Message;
-  context: IntercomContext;
+  context?: IntercomContext;
   replyCommand?: string;
-  baseBodyText: string;
+  baseBodyText?: string;
   bodyText: string;
   replyExpiredReason?: string;
+}
+
+interface TrackedInboundMessageEntry extends InboundMessageEntry {
+  context: IntercomContext;
+  baseBodyText: string;
 }
 
 type ContactSupervisorReason = "need_decision" | "progress_update" | "interview_request";
@@ -492,7 +497,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let agentRunning = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
-  const inboundMessageEntries = new Map<string, InboundMessageEntry>();
+  const inboundMessageEntries = new Map<string, TrackedInboundMessageEntry>();
   const pendingIdleMessages: InboundMessageEntry[] = [];
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
@@ -562,7 +567,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     clearTimeout(inboundFlushTimer);
     inboundFlushTimer = null;
   }
-  function markEntryReplyExpired(entry: InboundMessageEntry): void {
+  function markEntryReplyExpired(entry: TrackedInboundMessageEntry): void {
     if (entry.replyExpiredReason) {
       return;
     }
@@ -676,7 +681,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return;
     }
-    if (delivery !== "followUp") {
+    if (delivery !== "followUp" && entry.context) {
       replyTracker.queueTurnContext(entry.context);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
@@ -758,7 +763,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
     const context = replyTracker.recordIncomingMessage(from, message);
-    const entry = { from, message, context, replyCommand, baseBodyText: bodyText, bodyText };
+    const entry: TrackedInboundMessageEntry = { from, message, context, replyCommand, baseBodyText: bodyText, bodyText };
     inboundMessageEntries.set(message.id, entry);
     void (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);

@@ -95,6 +95,17 @@ test("reply drops a queued current-turn ask once it times out before the turn st
   assert.deepEqual(tracker.listPending(1001 + DEFAULT_BLOCKING_REPLY_TIMEOUT_MS), []);
 });
 
+test("reply tracker ignores missing queued turn contexts", () => {
+  const tracker = new ReplyTracker();
+  const context = tracker.recordIncomingMessage(createSession("planner-id", "planner"), createMessage("ask-1", "Need a decision"), 1000);
+
+  tracker.queueTurnContext(undefined);
+  tracker.queueTurnContext(context);
+  tracker.beginTurn(1001);
+
+  assert.equal(tracker.resolveReplyTarget({}, 1002).message.id, "ask-1");
+});
+
 test("reply errors with the expiry reason after the sender session exits", () => {
   const tracker = new ReplyTracker();
   tracker.recordIncomingMessage(createSession("child-id", "subagent-worker"), createMessage("ask-1", "Need a decision"), 1000);
