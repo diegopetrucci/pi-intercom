@@ -27,6 +27,7 @@ const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
 const INBOUND_FLUSH_DELAY_MS = 200;
 const INBOUND_IDLE_RETRY_MS = 500;
+const SUBAGENT_PROGRESS_UPDATE_HEADING = "Subagent progress update.";
 const DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX = "subagent-chat";
 const SUBAGENT_ORCHESTRATOR_TARGET_ENV = "PI_SUBAGENT_ORCHESTRATOR_TARGET";
 const SUBAGENT_RUN_ID_ENV = "PI_SUBAGENT_RUN_ID";
@@ -143,7 +144,7 @@ function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", me
     ? "Subagent needs a supervisor decision."
     : kind === "interview"
       ? "Subagent requests a structured supervisor interview."
-      : "Subagent progress update.";
+      : SUBAGENT_PROGRESS_UPDATE_HEADING;
   return [
     heading,
     `Run: ${metadata.runId}`,
@@ -153,6 +154,19 @@ function formatChildOrchestratorMessage(kind: "ask" | "update" | "interview", me
     "",
     message,
   ].filter((line): line is string => line !== undefined).join("\n");
+}
+
+function extractRunIdFromMessageText(messageText: string): string | null {
+  const runId = messageText.match(/^Run:\s*(.+)$/m)?.[1]?.trim();
+  return runId ? runId : null;
+}
+
+function isChildProgressUpdateMessage(message: Message): boolean {
+  if (!message.subagent) {
+    return false;
+  }
+  const heading = message.content.text.split(/\r?\n/u, 1)[0]?.trim();
+  return heading === SUBAGENT_PROGRESS_UPDATE_HEADING;
 }
 
 function getReplyExpiryCopy(context: IntercomContext): { errorText: string; cardText: string } {
@@ -739,6 +753,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     pendingIdleMessages.push(entry);
     scheduleInboundFlush();
   }
+  function dropQueuedChildProgressUpdatesForRun(runId: string): void {
+    for (let index = pendingIdleMessages.length - 1; index >= 0; index -= 1) {
+      const entry = pendingIdleMessages[index];
+      if (entry && entry.message.subagent?.runId === runId && isChildProgressUpdateMessage(entry.message)) {
+        pendingIdleMessages.splice(index, 1);
+      }
+    }
+  }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
@@ -908,6 +930,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return byName[0]?.id ?? null;
   }
   function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
+    if (sender === "subagent-result") {
+      const runId = extractRunIdFromMessageText(messageText);
+      if (runId) {
+        dropQueuedChildProgressUpdatesForRun(runId);
+      }
+    }
     const now = Date.now();
     sendIncomingMessage({
       from: {
