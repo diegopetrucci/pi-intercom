@@ -469,6 +469,114 @@ test("busy interactive sessions idle-gate top-level asks without aborting", { co
   }
 });
 
+test("busy interactive parents suppress stale queued child progress updates after a grouped result", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+  const staleChild = new IntercomClient();
+  const unrelatedChild = new IntercomClient();
+  let idle = false;
+  const harness = createExtensionHarness("busy-parent", {
+    hasUI: true,
+    isIdle: () => idle,
+  });
+
+  try {
+    piIntercomExtension(harness.pi as never);
+    await harness.emitLifecycle("session_start");
+
+    await staleChild.connect({
+      name: "subagent-worker-78f659a3-1",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    });
+    await unrelatedChild.connect({
+      name: "subagent-worker-2b7f16c4-1",
+      cwd: repoDir,
+      model: "test-model",
+      pid: process.pid,
+      startedAt: Date.now(),
+      lastActivity: Date.now(),
+    });
+
+    const target = await waitForSessionByName(planner, "busy-parent");
+    const staleDelivered = await staleChild.send(target.id, {
+      messageId: "child-progress-stale",
+      text: [
+        "Subagent progress update.",
+        "Run: 78f659a3",
+        "Agent: worker",
+        "Child index: 0",
+        "Child intercom target: subagent-worker-78f659a3-1",
+        "",
+        "This update should be suppressed after the result arrives.",
+      ].join("\n"),
+      subagent: {
+        runId: "78f659a3",
+        agent: "worker",
+        index: "0",
+        sessionName: "subagent-worker-78f659a3-1",
+        capabilities: { blockingSupervisorReplyPath: "live" },
+      },
+    });
+    assert.equal(staleDelivered.delivered, true);
+
+    const unrelatedDelivered = await unrelatedChild.send(target.id, {
+      messageId: "child-progress-unrelated",
+      text: [
+        "Subagent progress update.",
+        "Run: 2b7f16c4",
+        "Agent: worker",
+        "Child index: 0",
+        "Child intercom target: subagent-worker-2b7f16c4-1",
+        "",
+        "This unrelated progress update should still be delivered.",
+      ].join("\n"),
+      subagent: {
+        runId: "2b7f16c4",
+        agent: "worker",
+        index: "0",
+        sessionName: "subagent-worker-2b7f16c4-1",
+        capabilities: { blockingSupervisorReplyPath: "live" },
+      },
+    });
+    assert.equal(unrelatedDelivered.delivered, true);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(harness.sentMessages.length, 0);
+
+    harness.pi.events.emit("subagent:result-intercom", {
+      to: "busy-parent",
+      requestId: "result-1",
+      message: "subagent result\n\nRun: 78f659a3\nAgent: worker\nStatus: completed",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-result/);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Run: 78f659a3/);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Status: completed/);
+
+    idle = true;
+    await harness.emitLifecycle("agent_end");
+    await waitForCondition(() => harness.sentMessages.length === 2, "the unrelated queued progress update");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    assert.equal(harness.sentMessages.length, 2);
+    assert.equal(harness.sentMessages[1]?.options?.triggerTurn, true);
+    assert.match(harness.sentMessages[1]?.message.content ?? "", /Run: 2b7f16c4/);
+    assert.match(harness.sentMessages[1]?.message.content ?? "", /This unrelated progress update should still be delivered/);
+    assert.doesNotMatch(harness.sentMessages[1]?.message.content ?? "", /This update should be suppressed after the result arrives/);
+  } finally {
+    await harness.emitLifecycle("session_shutdown");
+    await staleChild.disconnect().catch(() => undefined);
+    await unrelatedChild.disconnect().catch(() => undefined);
+    await cleanup();
+  }
+});
+
 test("deferred startup connect is cancelled on shutdown", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
