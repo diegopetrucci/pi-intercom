@@ -32,6 +32,11 @@
 
 - Validation command: `npm test`
 
+## Gnosis / memory
+
+- Commit `.gnosis/entries.jsonl` changes created or updated during repo work with the related work by default, unless the user explicitly says otherwise.
+- Preserve existing `.gnosis/entries.jsonl` entries unless the assigned work explicitly requires changing them.
+
 ## Working rules
 
 - Prefer the smallest correct change.

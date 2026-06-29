@@ -516,11 +516,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
     from: string;
+    label: string;
     replyTo: string;
     resolve: (message: Message) => void;
     reject: (error: Error) => void;
   } | null = null;
-  function waitForReply(from: string, replyTo: string, signal?: AbortSignal): Promise<Message> {
+  function waitForReply(from: string, replyTo: string, signal?: AbortSignal, label = from): Promise<Message> {
     if (replyWaiter) {
       return Promise.reject(new Error("Already waiting for a reply"));
     }
@@ -529,7 +530,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        rejectReplyWaiter(new Error(`No reply from "${from}" within ${DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT}`));
+        rejectReplyWaiter(new Error(`No reply from "${label}" within ${DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT}`));
       }, DEFAULT_BLOCKING_REPLY_TIMEOUT_MS);
       const cleanup = () => {
         clearTimeout(timeout);
@@ -545,6 +546,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       signal?.addEventListener("abort", onAbort, { once: true });
       replyWaiter = {
         from,
+        label,
         replyTo,
         resolve: (message) => {
           cleanup();
@@ -1339,7 +1341,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         let replyPromise: Promise<Message> | null = null;
         try {
           const questionId = randomUUID();
-          replyPromise = waitForReply(sendTo, questionId, signal);
+          replyPromise = waitForReply(sendTo, questionId, signal, metadata.orchestratorTarget);
           replyPromise.catch(() => undefined);
           if (signal?.aborted) {
             rejectReplyWaiter(new Error("Cancelled"));
@@ -1672,7 +1674,7 @@ Usage:
               };
             }
             const questionId = randomUUID();
-            replyPromise = waitForReply(sendTo, questionId, _signal);
+            replyPromise = waitForReply(sendTo, questionId, _signal, to);
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
               text: message,

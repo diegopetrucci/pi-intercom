@@ -4,12 +4,16 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-06-29
+
 ### Changed
+- Published the tlh-maintained fork as the scoped npm package `@diegopetrucci/pi-intercom@0.6.1`, preserving the existing Pi extension/skill manifests and documenting pinned installation guidance for tlh automation.
 - Default blocking reply timeouts for `intercom ask`, `contact_supervisor need_decision`, and `contact_supervisor interview_request` are now 2 minutes.
 - Resolve intercom config and broker runtime files from `PI_CODING_AGENT_DIR` when set, falling back to `~/.pi/agent` for normal Pi sessions.
 
 ### Fixed
 - Expired incoming asks no longer remain replyable when they time out before the receiver's current turn starts.
+- Blocking ask timeout errors now preserve the original user-facing target label while routing still uses the resolved session ID.
 
 ## [0.6.0] - 2026-05-03
 

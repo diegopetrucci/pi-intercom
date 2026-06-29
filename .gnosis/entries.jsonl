@@ -1,0 +1,1 @@
+{"id":"kpejjx","topics":["pi-intercom","npm-release","tlh-installer"],"text":"Diego wants pi-intercom published to npm so The Last Harness can install it via npm instead of checking out this repository during installer runs; the motivation is faster TLH installation.","related":null,"created_at":"2026-06-29T19:33:36.818254Z","updated_at":"2026-06-29T19:33:36.818254Z"}
