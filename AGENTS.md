@@ -2,7 +2,7 @@
 
 ## Repository role
 
-- This repository is the `pi-intercom` fork maintained for **The Last Harness (tlh)**.
+- This repository is the `pi-intercom` fork maintained for **The Last Harness (tlh)**: https://github.com/diegopetrucci/the-last-harness
 - Fork origin: `diegopetrucci/pi-intercom`
 - Upstream source of truth: `nicobailon/pi-intercom`
 - Purpose: maintain a reviewable fork of the local Pi session-to-session intercom extension while preserving upstream compatibility unless an approved fork delta is required.
