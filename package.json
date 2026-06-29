@@ -1,6 +1,7 @@
 {
-  "name": "pi-intercom",
-  "version": "0.6.0",
+  "name": "@diegopetrucci/pi-intercom",
+  "version": "0.6.1",
+  "description": "Local session-to-session intercom extension for Pi coding agent and tlh workflows.",
   "license": "MIT",
   "type": "module",
   "main": "index.ts",
@@ -20,6 +21,13 @@
   "keywords": [
     "pi-package"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diegopetrucci/pi-intercom.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": [
       "./index.ts"
