@@ -37,7 +37,7 @@ Then restart Pi. The extension auto-connects to the broker on startup and regist
 For The Last Harness (tlh) and other automation, pin the exact fork version instead of relying on an unpinned install:
 
 ```bash
-pi install npm:@diegopetrucci/pi-intercom@0.6.1
+pi install npm:@diegopetrucci/pi-intercom@0.6.2
 ```
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:

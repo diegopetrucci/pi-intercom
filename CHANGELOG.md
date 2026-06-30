@@ -4,6 +4,11 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-06-30
+
+### Changed
+- Suppressed local inline grouped subagent result cards for foreground result relays targeting the current orchestrator session, while still acknowledging delivery and clearing stale queued child progress for the completed run.
+
 ## [0.6.1] - 2026-06-29
 
 ### Changed
