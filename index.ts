@@ -440,7 +440,7 @@ function duplicateSessionNames(sessions: SessionInfo[]): Set<string> {
 function shortSessionId(sessionId: string): string {
   return sessionId.slice(0, 8);
 }
-function parseSubagentIntercomPayload(payload: unknown): { to: string; message: string; requestId?: string } | null {
+function parseSubagentIntercomPayload(payload: unknown): { to: string; message: string; requestId?: string; source?: string } | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
   }
@@ -449,7 +449,13 @@ function parseSubagentIntercomPayload(payload: unknown): { to: string; message: 
     return null;
   }
   const requestId = typeof record.requestId === "string" ? record.requestId : undefined;
-  return { to: record.to, message: record.message, ...(requestId ? { requestId } : {}) };
+  const source = typeof record.source === "string" ? record.source : undefined;
+  return {
+    to: record.to,
+    message: record.message,
+    ...(requestId ? { requestId } : {}),
+    ...(source ? { source } : {}),
+  };
 }
 function resolveIntercomPresenceName(sessionName: string | undefined, sessionId: string): string {
   const trimmedName = sessionName?.trim();
@@ -931,11 +937,14 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }
     return byName[0]?.id ?? null;
   }
-  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
+  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string, source?: string): void {
     if (sender === "subagent-result") {
       const runId = extractRunIdFromMessageText(messageText);
       if (runId) {
         dropQueuedChildProgressUpdatesForRun(runId);
+      }
+      if (source === "foreground") {
+        return;
       }
     }
     const now = Date.now();
@@ -990,7 +999,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, parsed.source);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
@@ -1011,7 +1020,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, parsed.source);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
