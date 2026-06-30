@@ -469,8 +469,9 @@ test("busy interactive sessions idle-gate top-level asks without aborting", { co
   }
 });
 
-test("busy interactive parents suppress stale queued child progress updates after a grouped result", { concurrency: false }, async () => {
+test("foreground grouped subagent results suppress local cards but still clear stale queued child progress", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
+  const deliveryAcks: unknown[] = [];
   const { planner, cleanup } = await setupClients();
   const staleChild = new IntercomClient();
   const unrelatedChild = new IntercomClient();
@@ -479,6 +480,7 @@ test("busy interactive parents suppress stale queued child progress updates afte
     hasUI: true,
     isIdle: () => idle,
   });
+  harness.pi.events.on("subagent:result-intercom-delivery", (payload) => deliveryAcks.push(payload));
 
   try {
     piIntercomExtension(harness.pi as never);
@@ -550,25 +552,24 @@ test("busy interactive parents suppress stale queued child progress updates afte
     harness.pi.events.emit("subagent:result-intercom", {
       to: "busy-parent",
       requestId: "result-1",
+      source: "foreground",
       message: "subagent result\n\nRun: 78f659a3\nAgent: worker\nStatus: completed",
     });
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.equal(harness.sentMessages.length, 1);
-    assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-result/);
-    assert.match(harness.sentMessages[0]?.message.content ?? "", /Run: 78f659a3/);
-    assert.match(harness.sentMessages[0]?.message.content ?? "", /Status: completed/);
+    assert.equal(harness.sentMessages.length, 0);
+    assert.deepEqual(deliveryAcks, [{ requestId: "result-1", delivered: true }]);
 
     idle = true;
     await harness.emitLifecycle("agent_end");
-    await waitForCondition(() => harness.sentMessages.length === 2, "the unrelated queued progress update");
+    await waitForCondition(() => harness.sentMessages.length === 1, "the unrelated queued progress update");
     await new Promise((resolve) => setTimeout(resolve, 250));
 
-    assert.equal(harness.sentMessages.length, 2);
-    assert.equal(harness.sentMessages[1]?.options?.triggerTurn, true);
-    assert.match(harness.sentMessages[1]?.message.content ?? "", /Run: 2b7f16c4/);
-    assert.match(harness.sentMessages[1]?.message.content ?? "", /This unrelated progress update should still be delivered/);
-    assert.doesNotMatch(harness.sentMessages[1]?.message.content ?? "", /This update should be suppressed after the result arrives/);
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Run: 2b7f16c4/);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /This unrelated progress update should still be delivered/);
+    assert.doesNotMatch(harness.sentMessages[0]?.message.content ?? "", /This update should be suppressed after the result arrives/);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await staleChild.disconnect().catch(() => undefined);
@@ -1218,6 +1219,7 @@ test("subagent control intercom events wake the current orchestrator session", a
   piIntercomExtension(harness.pi as never);
   harness.pi.events.emit("subagent:control-intercom", {
     to: "orchestrator",
+    source: "foreground",
     message: "subagent needs attention\n\nworker needs attention in run 78f659a3.",
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -1230,7 +1232,7 @@ test("subagent control intercom events wake the current orchestrator session", a
   await assert.doesNotReject(() => harness.emitLifecycle("turn_start"));
 });
 
-test("subagent result intercom events wake the current orchestrator session", async () => {
+test("async subagent result intercom events still wake the current orchestrator session", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const deliveryAcks: unknown[] = [];
   const harness = createExtensionHarness("orchestrator");
@@ -1240,6 +1242,7 @@ test("subagent result intercom events wake the current orchestrator session", as
   harness.pi.events.emit("subagent:result-intercom", {
     to: "orchestrator",
     requestId: "result-1",
+    source: "async",
     message: "subagent result\n\nRun: 78f659a3\nAgent: worker\nStatus: completed",
   });
   await new Promise((resolve) => setImmediate(resolve));
