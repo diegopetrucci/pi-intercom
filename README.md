@@ -6,6 +6,8 @@
 
 Direct 1:1 messaging between pi sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
 
+> TLH fork note: this fork exists to serve **The Last Harness (tlh)**, where tlh automation bundles and pins this package version on purpose. It is maintained as a TLH compatibility fork, not as a general standalone distribution target outside that tlh use.
+
 ```text
 User flow: press Alt+M or run /intercom to pick a session and send a message
 ```
@@ -34,7 +36,9 @@ pi install npm:@diegopetrucci/pi-intercom
 
 Then restart Pi. The extension auto-connects to the broker on startup and registers the bundled `pi-intercom` skill for common coordination patterns.
 
-For The Last Harness (tlh) and other automation, pin the exact fork version instead of relying on an unpinned install:
+If you're using The Last Harness (tlh), keep using the version bundled or explicitly pinned by tlh automation rather than treating this fork as a generally floating standalone install target.
+
+For The Last Harness (tlh), pin the exact fork version instead of relying on an unpinned install:
 
 ```bash
 pi install npm:@diegopetrucci/pi-intercom@0.6.2
