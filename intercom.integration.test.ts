@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter, once } from "node:events";
@@ -140,7 +140,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
   const commands = new Map<string, (args: string, ctx: unknown) => unknown>();
   const tools: CapturedTool[] = [];
   const entries: Array<{ type: string; data: unknown }> = [];
-  const sentMessages: Array<{ message: { customType?: string; content?: string; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string } }> = [];
+  const sentMessages: Array<{ message: { customType?: string; content?: string; display?: boolean; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string } }> = [];
   const pi = {
     getSessionName: () => sessionName,
     events: {
@@ -163,7 +163,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
       commands.set(name, command.handler);
     },
     registerShortcut: () => undefined,
-    sendMessage: (message: { customType?: string; content?: string; details?: unknown }, options?: { triggerTurn?: boolean; deliverAs?: string }) => {
+    sendMessage: (message: { customType?: string; content?: string; display?: boolean; details?: unknown }, options?: { triggerTurn?: boolean; deliverAs?: string }) => {
       sentMessages.push({ message, options });
     },
     appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
@@ -462,10 +462,55 @@ test("busy interactive sessions idle-gate top-level asks without aborting", { co
     assert.equal(harness.sentMessages.length, 1);
     assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
     assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+    assert.equal(harness.sentMessages[0]?.message.display, true);
     assert.match(harness.sentMessages[0]?.message.content ?? "", /Can you respond after your current turn/);
   } finally {
     await harness.emitLifecycle("session_shutdown");
     await cleanup();
+  }
+});
+
+test("showIncomingMessages=false injects messages with display:false while keeping content intact", { concurrency: false }, async () => {
+  const intercomDir = path.join(sharedHomeDir, "a", "intercom");
+  const configPath = path.join(intercomDir, "config.json");
+  mkdirSync(intercomDir, { recursive: true });
+  writeFileSync(configPath, JSON.stringify({ showIncomingMessages: false }));
+
+  try {
+    const { default: piIntercomExtension } = await import("./index.ts");
+    const { planner, cleanup } = await setupClients();
+    let idle = false;
+    const harness = createExtensionHarness("quiet-worker", {
+      hasUI: true,
+      isIdle: () => idle,
+    });
+
+    try {
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+
+      const target = await waitForSessionByName(planner, "quiet-worker");
+
+      const delivered = await planner.send(target.id, {
+        messageId: "quiet-mode-ask",
+        text: "Should this be hidden from the TUI?",
+        expectsReply: true,
+      });
+      assert.equal(delivered.delivered, true);
+
+      idle = true;
+      await harness.emitLifecycle("agent_end");
+      await waitForCondition(() => harness.sentMessages.length === 1, "the quiet-mode inbound message");
+
+      assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+      assert.equal(harness.sentMessages[0]?.message.display, false);
+      assert.match(harness.sentMessages[0]?.message.content ?? "", /Should this be hidden from the TUI\?/);
+    } finally {
+      await harness.emitLifecycle("session_shutdown");
+      await cleanup();
+    }
+  } finally {
+    unlinkSync(configPath);
   }
 });
 

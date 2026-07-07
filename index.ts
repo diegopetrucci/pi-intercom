@@ -712,7 +712,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       {
         customType: "intercom_message",
         content: `**📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`,
-        display: true,
+        display: config.showIncomingMessages,
         details: entry,
       },
       delivery === "trigger"
