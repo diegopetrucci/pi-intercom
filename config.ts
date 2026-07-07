@@ -20,6 +20,9 @@ export interface IntercomConfig {
   
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
+
+  /** Render inbound message boxes in the TUI (default: true) */
+  showIncomingMessages: boolean;
 }
 
 function getConfigPath(): string {
@@ -32,6 +35,7 @@ const defaults: IntercomConfig = {
   confirmSend: false,
   enabled: true,
   replyHint: true,
+  showIncomingMessages: true,
 };
 
 export function loadConfig(): IntercomConfig {
@@ -94,6 +98,13 @@ export function loadConfig(): IntercomConfig {
         throw new Error(`"replyHint" must be a boolean`);
       }
       config.replyHint = parsedConfig.replyHint;
+    }
+
+    if (Object.hasOwn(parsedConfig, "showIncomingMessages")) {
+      if (typeof parsedConfig.showIncomingMessages !== "boolean") {
+        throw new Error(`"showIncomingMessages" must be a boolean`);
+      }
+      config.showIncomingMessages = parsedConfig.showIncomingMessages;
     }
 
     if (Object.hasOwn(parsedConfig, "status")) {

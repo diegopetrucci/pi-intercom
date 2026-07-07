@@ -384,6 +384,7 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` (or `~/.pi/agent/intercom/con
   "confirmSend": false,
   "enabled": true,
   "replyHint": true,
+  "showIncomingMessages": true,
   "status": "researching"
 }
 ```
@@ -395,6 +396,7 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` (or `~/.pi/agent/intercom/con
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
+| `showIncomingMessages` | true | Render inbound message boxes in the TUI; when false, messages are still delivered to the model |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 
 For example, if you have Bun installed and want it to start the broker directly, use:
