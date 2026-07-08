@@ -1184,11 +1184,43 @@ test("blocking asks use the default two-minute timeout", { concurrency: false },
       const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
       const originalSetTimeout = globalThis.setTimeout;
       const scheduledDelays: number[] = [];
+      const capturedBlockingTimeouts: Array<() => void> = [];
+      // Each ask schedules its 2-minute timer synchronously, in the same tick as
+      // (and immediately before) the underlying client.send() call. Track each
+      // send() call's settlement in the same order so the test can await the
+      // matching send before firing the corresponding captured timeout. This
+      // guarantees the tool's own `await replyPromise` has already been reached
+      // (production code resumes past `await connectedClient.send(...)` before
+      // our tracking promise's continuation runs), so manually rejecting the
+      // reply waiter can never race an unawaited promise.
+      const originalSend = IntercomClient.prototype.send;
+      const sendSettlements: Array<Promise<unknown>> = [];
+      IntercomClient.prototype.send = function (this: InstanceType<typeof IntercomClient>, ...sendArgs: Parameters<typeof originalSend>) {
+        const result = originalSend.apply(this, sendArgs);
+        sendSettlements.push(result.catch(() => undefined));
+        return result;
+      } as typeof originalSend;
 
       globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
         const delay = Number(timeout ?? 0);
         scheduledDelays.push(delay);
-        return originalSetTimeout(handler, delay === DEFAULT_BLOCKING_REPLY_TIMEOUT_MS ? 0 : delay, ...args);
+        if (delay === DEFAULT_BLOCKING_REPLY_TIMEOUT_MS) {
+          // Capture the handler instead of letting it fire near-immediately, which
+          // would race the ask's socket round-trip. The test fires it manually,
+          // after the corresponding ask has been observed.
+          capturedBlockingTimeouts.push(() => {
+            if (typeof handler === "function") {
+              handler(...args);
+            }
+          });
+          // Return a real timer handle that never fires within the test's lifetime
+          // so callers holding the handle (e.g. for clearTimeout) still work.
+          // unref() so this stray timer never keeps the process alive.
+          const staleTimer = originalSetTimeout(() => {}, 2 ** 31 - 1);
+          staleTimer.unref?.();
+          return staleTimer;
+        }
+        return originalSetTimeout(handler, delay, ...args);
       }) as typeof globalThis.setTimeout;
 
       try {
@@ -1196,6 +1228,9 @@ test("blocking asks use the default two-minute timeout", { concurrency: false },
         const supervisorResultPromise = supervisorTool.execute("ask-timeout", { reason: "need_decision", message: "Should I continue?" }, new AbortController().signal, undefined, harness.ctx);
         const [_supervisorFrom, supervisorAsk] = await supervisorAskReceived;
         assert.equal(supervisorAsk.expectsReply, true);
+        assert.equal(capturedBlockingTimeouts.length, 1);
+        await sendSettlements[0];
+        capturedBlockingTimeouts[0]!();
         const supervisorResult = await supervisorResultPromise;
         assert.equal(supervisorResult.isError, true);
         assert.ok((supervisorResult.content[0]?.text ?? "").includes(`No reply from "orchestrator" within ${DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT}`));
@@ -1204,6 +1239,9 @@ test("blocking asks use the default two-minute timeout", { concurrency: false },
         const intercomResultPromise = intercomTool.execute("generic-ask-timeout", { action: "ask", to: "planner", message: "Can you review this?" }, new AbortController().signal, undefined, harness.ctx);
         const [_plannerFrom, plannerAsk] = await intercomAskReceived;
         assert.equal(plannerAsk.expectsReply, true);
+        assert.equal(capturedBlockingTimeouts.length, 2);
+        await sendSettlements[1];
+        capturedBlockingTimeouts[1]!();
         const intercomResult = await intercomResultPromise;
         assert.equal(intercomResult.isError, true);
         assert.ok((intercomResult.content[0]?.text ?? "").includes(`No reply from "planner" within ${DEFAULT_BLOCKING_REPLY_TIMEOUT_TEXT}`));
@@ -1211,6 +1249,7 @@ test("blocking asks use the default two-minute timeout", { concurrency: false },
         assert.ok(scheduledDelays.filter((delay) => delay === DEFAULT_BLOCKING_REPLY_TIMEOUT_MS).length >= 2);
       } finally {
         globalThis.setTimeout = originalSetTimeout;
+        IntercomClient.prototype.send = originalSend;
         await harness.emitLifecycle("session_shutdown");
       }
     });
