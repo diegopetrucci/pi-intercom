@@ -160,6 +160,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
   const shortcuts: string[] = [];
   const tools: CapturedTool[] = [];
   const entries: Array<{ type: string; data: unknown }> = [];
+  const messageRenderers = new Map<string, (message: { details?: unknown }, options: { expanded?: boolean }, theme: RenderTheme) => RenderedComponent | undefined>();
   const sentMessages: Array<{ message: { customType?: string; content?: string; display?: boolean; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string } }> = [];
   const pi = {
     getSessionName: () => sessionName,
@@ -175,7 +176,9 @@ function createExtensionHarness(sessionName = "child-worker", options: {
       handlers.push(handler);
       lifecycleHandlers.set(event, handlers);
     },
-    registerMessageRenderer: () => undefined,
+    registerMessageRenderer: (type: string, renderer: (message: { details?: unknown }, options: { expanded?: boolean }, theme: RenderTheme) => RenderedComponent | undefined) => {
+      messageRenderers.set(type, renderer);
+    },
     registerTool: (tool: CapturedTool) => {
       tools.push(tool);
     },
@@ -206,6 +209,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     commands,
     shortcuts,
     entries,
+    messageRenderers,
     sentMessages,
     async emitLifecycle(event: string, payload: unknown = {}, eventContext: unknown = ctx) {
       for (const handler of lifecycleHandlers.get(event) ?? []) {
@@ -482,7 +486,42 @@ test("bridge surface keeps broker lifecycle and control relay compatibility", { 
       await waitForCondition(() => harness.sentMessages.length === 1, "the bridge-mode inbound peer ask");
       assert.match(harness.sentMessages[0]?.message.content ?? "", /Can bridge mode receive this peer ask\?/);
       assert.doesNotMatch(harness.sentMessages[0]?.message.content ?? "", /To reply, use the intercom tool/);
+
+      const bridgeMessage = harness.sentMessages[0]!.message;
+      const bridgeDetails = bridgeMessage.details as { replyCommand?: string; message?: { expectsReply?: boolean } } | undefined;
+      assert.equal(bridgeDetails?.replyCommand, undefined);
+      assert.equal(bridgeDetails?.message?.expectsReply, true);
+
+      const intercomMessageRenderer = harness.messageRenderers.get("intercom_message");
+      assert.ok(intercomMessageRenderer);
+      const collapsedBridgeCard = intercomMessageRenderer!(bridgeMessage, { expanded: false }, renderTheme);
+      const expandedBridgeCard = intercomMessageRenderer!(bridgeMessage, { expanded: true }, renderTheme);
+      assert.ok(collapsedBridgeCard);
+      assert.ok(expandedBridgeCard);
+      assert.match(renderToText(collapsedBridgeCard!), /Reply requested/);
+      assert.doesNotMatch(renderToText(collapsedBridgeCard!), /intercom\(\{ action: "reply", message: "\.\.\." \}\)/);
+      assert.doesNotMatch(renderToText(expandedBridgeCard!), /intercom\(\{ action: "reply", message: "\.\.\." \}\)/);
       harness.sentMessages.length = 0;
+
+      const fullHarness = createExtensionHarness("full-worker", { hasUI: true });
+      await withIntercomSurfaceEnv("full", async () => {
+        piIntercomExtension(fullHarness.pi as never);
+        try {
+          await fullHarness.emitLifecycle("session_start");
+          const fullSession = await waitForSessionByName(planner, "full-worker");
+          const fullAsk = await planner.send(fullSession.id, {
+            messageId: "full-peer-ask",
+            text: "Can full mode still reply from the card?",
+            expectsReply: true,
+          });
+          assert.equal(fullAsk.delivered, true);
+          await waitForCondition(() => fullHarness.sentMessages.length === 1, "the full-mode inbound peer ask");
+          const fullDetails = fullHarness.sentMessages[0]?.message.details as { replyCommand?: string } | undefined;
+          assert.equal(fullDetails?.replyCommand, 'intercom({ action: "reply", message: "..." })');
+        } finally {
+          await fullHarness.emitLifecycle("session_shutdown");
+        }
+      });
 
       harness.pi.events.emit("subagent:control-intercom", {
         to: "bridge-worker",

@@ -796,7 +796,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ? formatAttachments(message.content.attachments)
       : "";
     const bodyText = `${message.content.text}${attachmentText}`;
-    const replyCommand = config.replyHint && message.expectsReply
+    const replyCommand = fullSurfaceEnabled && config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
     const context = replyTracker.recordIncomingMessage(from, message);

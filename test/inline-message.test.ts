@@ -151,6 +151,30 @@ test("collapsed reply-needed messages keep reply context visible", () => {
   assert.match(output, /intercom\(\{ action: "reply", message: "\.\.\." \}\)/);
 });
 
+test("reply-requested bridge cards omit unavailable reply commands in collapsed and expanded views", () => {
+  const replyNeededMessage: Message = {
+    ...longMessage,
+    expectsReply: true,
+  };
+  const collapsed = new InlineMessageComponent(from, replyNeededMessage, theme as any);
+  const expanded = new InlineMessageComponent(
+    from,
+    replyNeededMessage,
+    theme as any,
+    undefined,
+    undefined,
+    true,
+  );
+
+  const collapsedOutput = renderText(collapsed.render(100));
+  const expandedOutput = renderText(expanded.render(100));
+
+  assert.match(collapsedOutput, /Ctrl\+O \/ app\.tools\.expand to read full request/);
+  assert.match(collapsedOutput, /Reply requested/);
+  assert.doesNotMatch(collapsedOutput, /intercom\(\{ action: "reply", message: "\.\.\." \}\)/);
+  assert.doesNotMatch(expandedOutput, /intercom\(\{ action: "reply", message: "\.\.\." \}\)/);
+});
+
 test("inline intercom messages render at the available terminal width", () => {
   const collapsed = new InlineMessageComponent(from, longMessage, theme as any);
   const expanded = new InlineMessageComponent(
