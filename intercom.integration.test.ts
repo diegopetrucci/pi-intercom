@@ -17,6 +17,7 @@ const childEnvKeys = [
   "PI_SUBAGENT_INTERCOM_SESSION_NAME",
   "PI_SUBAGENT_BLOCKING_SUPERVISOR_REPLY_PATH",
 ] as const;
+const intercomEnvKeys = ["PI_INTERCOM_SURFACE"] as const;
 const sharedHomeDir = mkdtempSync(path.join(tmpdir(), "pi-intercom-home-"));
 const previousHome = process.env.HOME;
 const previousUserProfile = process.env.USERPROFILE;
@@ -92,6 +93,24 @@ async function withChildOrchestratorEnv<T>(metadata: {
   }
 }
 
+async function withIntercomSurfaceEnv<T>(surface: "full" | "bridge" | "off", fn: () => T | Promise<T>): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const key of intercomEnvKeys) {
+    previous.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  process.env.PI_INTERCOM_SURFACE = surface;
+  try {
+    return await fn();
+  } finally {
+    for (const key of intercomEnvKeys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 interface CapturedToolResult {
   content: Array<{ type: string; text: string }>;
   isError: boolean;
@@ -138,6 +157,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
   const events = new EventEmitter();
   const lifecycleHandlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
   const commands = new Map<string, (args: string, ctx: unknown) => unknown>();
+  const shortcuts: string[] = [];
   const tools: CapturedTool[] = [];
   const entries: Array<{ type: string; data: unknown }> = [];
   const sentMessages: Array<{ message: { customType?: string; content?: string; display?: boolean; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string } }> = [];
@@ -162,7 +182,9 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => unknown }) => {
       commands.set(name, command.handler);
     },
-    registerShortcut: () => undefined,
+    registerShortcut: (key: string) => {
+      shortcuts.push(key);
+    },
     sendMessage: (message: { customType?: string; content?: string; display?: boolean; details?: unknown }, options?: { triggerTurn?: boolean; deliverAs?: string }) => {
       sentMessages.push({ message, options });
     },
@@ -182,6 +204,7 @@ function createExtensionHarness(sessionName = "child-worker", options: {
     ctx,
     tools,
     commands,
+    shortcuts,
     entries,
     sentMessages,
     async emitLifecycle(event: string, payload: unknown = {}, eventContext: unknown = ctx) {
@@ -385,6 +408,132 @@ test("contact supervisor tool renders reason and reply state", async () => {
     }, { isPartial: false }, renderTheme, { isError: false }));
     assert.match(failureText, /✗ Invalid reason/);
   });
+});
+
+test("bridge surface omits local tools, command, and shortcut while keeping rich async result relay", async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const deliveryAcks: unknown[] = [];
+
+  await withIntercomSurfaceEnv("bridge", async () => {
+    await withChildOrchestratorEnv({
+      orchestratorTarget: "orchestrator",
+      runId: "78f659a3",
+      agent: "worker",
+      index: "0",
+    }, async () => {
+      const harness = createExtensionHarness("orchestrator");
+      harness.pi.events.on("subagent:result-intercom-delivery", (payload) => deliveryAcks.push(payload));
+
+      piIntercomExtension(harness.pi as never);
+
+      assert.deepEqual(harness.tools.map((tool) => tool.name), []);
+      assert.deepEqual([...harness.commands.keys()], []);
+      assert.deepEqual(harness.shortcuts, []);
+
+      harness.pi.events.emit("subagent:result-intercom", {
+        to: "orchestrator",
+        requestId: "bridge-result-1",
+        source: "async",
+        message: [
+          "subagent result",
+          "",
+          "Run: 78f659a3",
+          "Agent: worker",
+          "Status: completed",
+          "Summary:",
+          "- Added bridge-only registration gating.",
+          "- Preserved acknowledgements and wake-up delivery.",
+          "",
+          "```json",
+          '{"ok":true,"mode":"bridge"}',
+          "```",
+        ].join("\n"),
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(harness.sentMessages.length, 1);
+      assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+      assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+      assert.match(harness.sentMessages[0]?.message.content ?? "", /Summary:/);
+      assert.match(harness.sentMessages[0]?.message.content ?? "", /```json/);
+      assert.deepEqual(deliveryAcks, [{ requestId: "bridge-result-1", delivered: true }]);
+    });
+  });
+});
+
+test("bridge surface keeps broker lifecycle and control relay compatibility", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const { planner, cleanup } = await setupClients();
+
+  try {
+    await withIntercomSurfaceEnv("bridge", async () => {
+      const harness = createExtensionHarness("bridge-worker", { hasUI: true });
+
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      const bridgeSession = await waitForSessionByName(planner, "bridge-worker");
+
+      const peerAsk = await planner.send(bridgeSession.id, {
+        messageId: "bridge-peer-ask",
+        text: "Can bridge mode receive this peer ask?",
+        expectsReply: true,
+      });
+      assert.equal(peerAsk.delivered, true);
+      await waitForCondition(() => harness.sentMessages.length === 1, "the bridge-mode inbound peer ask");
+      assert.match(harness.sentMessages[0]?.message.content ?? "", /Can bridge mode receive this peer ask\?/);
+      assert.doesNotMatch(harness.sentMessages[0]?.message.content ?? "", /To reply, use the intercom tool/);
+      harness.sentMessages.length = 0;
+
+      harness.pi.events.emit("subagent:control-intercom", {
+        to: "bridge-worker",
+        source: "foreground",
+        message: "subagent needs attention\n\nworker needs attention in run 91bc2d44.",
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(harness.sentMessages.length, 1);
+      assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+      assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+      assert.match(harness.sentMessages[0]?.message.content ?? "", /needs attention in run 91bc2d44/);
+
+      await harness.emitLifecycle("session_shutdown");
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("off surface installs no runtime or public intercom surface", { concurrency: false }, async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const deliveryAcks: unknown[] = [];
+  const { planner, cleanup } = await setupClients();
+
+  try {
+    await withIntercomSurfaceEnv("off", async () => {
+      const harness = createExtensionHarness("off-worker");
+      harness.pi.events.on("subagent:result-intercom-delivery", (payload) => deliveryAcks.push(payload));
+
+      piIntercomExtension(harness.pi as never);
+      await harness.emitLifecycle("session_start");
+      harness.pi.events.emit("subagent:result-intercom", {
+        to: "off-worker",
+        requestId: "off-result-1",
+        source: "async",
+        message: "subagent result should be ignored while off",
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const sessions = await planner.listSessions();
+      assert.equal(sessions.some((session) => session.name === "off-worker"), false);
+      assert.deepEqual(harness.tools.map((tool) => tool.name), []);
+      assert.deepEqual([...harness.commands.keys()], []);
+      assert.deepEqual(harness.shortcuts, []);
+      assert.equal(harness.sentMessages.length, 0);
+      assert.deepEqual(deliveryAcks, []);
+    });
+  } finally {
+    await cleanup();
+  }
 });
 
 test("sessions publish automatic lifecycle status", { concurrency: false }, async () => {
