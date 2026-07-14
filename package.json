@@ -1,6 +1,6 @@
 {
   "name": "@diegopetrucci/pi-intercom",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Local session-to-session intercom extension for Pi coding agent and tlh workflows.",
   "license": "MIT",
   "type": "module",
