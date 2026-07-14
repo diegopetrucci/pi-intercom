@@ -22,11 +22,11 @@ Sometimes you're running multiple pi sessions — one researching, one executing
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
 
-Pi-intercom also integrates well with [pi-subagents](https://github.com/nicobailon/pi-subagents): delegated child agents get a child-only `contact_supervisor` tool when `pi-subagents` supplies bridge metadata. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
+Pi-intercom also integrates well with [pi-subagents](https://github.com/nicobailon/pi-subagents). Modern `pi-subagents` provides native child-to-supervisor tooling. For compatibility, pi-intercom's `full` surface still registers its legacy `contact_supervisor` implementation when child bridge metadata is present; `bridge` omits that duplicate and relies on native `pi-subagents` supervision. Normal sessions never receive the child-only tool.
 
 ## In One Minute
 
-Each pi session that has `pi-intercom` loaded and enabled connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
+Each pi session that has `pi-intercom` loaded, `enabled`, and a non-`off` surface connects to a tiny local broker over a local IPC transport. In the default `full` surface, the extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). In `bridge`, it keeps the broker/runtime path needed for subagent rich-result and control relays but omits the local intercom tool and pi-intercom's compatibility supervisor tool. Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
 
 ## Install
 
@@ -61,8 +61,11 @@ Coordinate with other local pi sessions on related codebases. Use `/skill:pi-int
 A session becomes intercom-connected when all of these are true:
 - the `pi-intercom` extension is installed and loaded in that session
 - `enabled` is not set to `false` in `$PI_CODING_AGENT_DIR/intercom/config.json` (defaults to `~/.pi/agent/intercom/config.json`)
+- the effective surface is not `off`
 - the session has started or reloaded after the extension was installed
 - the local broker is running or can be auto-started
+
+For tlh migrations, `PI_INTERCOM_SURFACE` is the intended temporary runtime override because it changes the exposed surface without rewriting user-owned `config.json`.
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
@@ -226,18 +229,20 @@ The planner typically uses `send`. If you prefer manual approval for outgoing no
 
 ## Workflow: Subagent-to-Supervisor Escalation
 
-This workflow requires [`pi-subagents`](https://github.com/nicobailon/pi-subagents) to be installed and to supply child bridge metadata. When `pi-subagents` spawns a delegated child with that metadata, the child session gets a subagent-only `contact_supervisor` tool in addition to the regular `intercom` tool. Normal sessions never see `contact_supervisor`.
+This workflow requires [`pi-subagents`](https://github.com/nicobailon/pi-subagents). Modern `pi-subagents` owns and provides native child-to-supervisor supervision. In `full` mode, pi-intercom also retains its legacy/compatibility `contact_supervisor` implementation when child bridge metadata is present; this sits alongside the regular `intercom` tool. In `bridge` mode, pi-intercom deliberately omits that duplicate and relies on the native `pi-subagents` supervisor tool. Normal sessions never receive a child-only `contact_supervisor` tool.
 
-### When the Tool Appears
+The temporary `bridge` surface remains responsible only for rich subagent result/control delivery compatibility during tlh migration work. It does not replace or provide native supervisor tooling.
 
-`contact_supervisor` only registers when `pi-subagents` sets all of these environment variables:
+### When pi-intercom's Compatibility Tool Appears
+
+In `full` mode, pi-intercom's compatibility `contact_supervisor` registers when `pi-subagents` sets all of these environment variables:
 
 - `PI_SUBAGENT_ORCHESTRATOR_TARGET` — the supervisor session name or ID
 - `PI_SUBAGENT_RUN_ID` — the run identifier
 - `PI_SUBAGENT_CHILD_AGENT` — the agent type
 - `PI_SUBAGENT_CHILD_INDEX` — the child index within the run
 
-If any are missing, the session falls back to the regular `intercom` tool.
+If any are missing, pi-intercom does not register its compatibility `contact_supervisor`; in `full` mode its regular `intercom` tool remains available. This condition does not describe registration of modern `pi-subagents`' native supervisor tool.
 
 ### Foreground vs Async Child Sessions
 
@@ -336,7 +341,7 @@ The supervisor can reply with plain JSON or a fenced `json` block. If the reply 
 
 ### contact_supervisor
 
-Only registered in sessions where `pi-subagents` supplied the required child bridge metadata. Contacts the supervisor session that delegated the current task.
+Modern `pi-subagents` provides the native supervisor tool. Pi-intercom registers the compatibility implementation documented below only in `full`-surface sessions where `pi-subagents` supplied the required child bridge metadata; `bridge` omits it to avoid duplicating the native tool. It contacts the supervisor session that delegated the current task.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -383,19 +388,57 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` (or `~/.pi/agent/intercom/con
   "brokerArgs": ["--no-install", "tsx"],
   "confirmSend": false,
   "enabled": true,
+  "surface": "full",
   "replyHint": true,
   "showIncomingMessages": true,
   "status": "researching"
 }
 ```
 
+### Surface modes
+
+`surface` controls registration of intercom-facing tools, UI, and runtime. `enabled` remains a separate legacy runtime switch: `false` suppresses broker/session connection and broker-required operations, but it does not unregister public resources and local subagent event relay may still operate. Use `surface: "off"` for the hard stop.
+
+| Surface | Default | What it does |
+|---------|---------|--------------|
+| `full` | yes | Default behavior: registers the `intercom` tool, `/intercom`, `Alt+M`, normal reply hints, and pi-intercom's compatibility `contact_supervisor` when `pi-subagents` provides child metadata |
+| `bridge` | no | Keeps broker/runtime compatibility for temporary tlh migration bridging, including rich subagent result delivery and control relay behavior, but omits the local `intercom` tool, `/intercom`, `Alt+M`, reply-hint tool instructions, and pi-intercom's duplicate compatibility `contact_supervisor` |
+| `off` | no | Installs no intercom runtime or public surface |
+
+`bridge` is intentionally narrower than `full`: it is a temporary compatibility surface until native `pi-subagents` has rich-result/control delivery parity, not a replacement for native supervisor tooling (which modern `pi-subagents` already provides).
+
+### `PI_INTERCOM_SURFACE` precedence
+
+The effective surface is resolved in this order:
+
+1. `PI_INTERCOM_SURFACE`, if set
+2. `surface` in `$PI_CODING_AGENT_DIR/intercom/config.json`
+3. the default `full`
+
+Accepted values are `full`, `bridge`, and `off`.
+
+If `PI_INTERCOM_SURFACE` is set to an invalid value, pi-intercom warns and fails safe to `full`. This override still wins over `config.json`, so an invalid environment value will not silently leave the session in `bridge` or `off`.
+
+If `config.json#surface` is invalid, pi-intercom warns and falls back safely to `full` unless a valid `PI_INTERCOM_SURFACE` override is present.
+
+To undo a temporary override, unset `PI_INTERCOM_SURFACE` and reload/restart the session. For example:
+
+```bash
+unset PI_INTERCOM_SURFACE
+```
+
+To undo a checked-in or local config override instead, remove the `surface` key (or set it back to `"full"`) in `$PI_CODING_AGENT_DIR/intercom/config.json`, then reload/restart the session.
+
+### Other settings
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `brokerCommand` | `"npx"` | Command used to start the local broker process |
 | `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
-| `enabled` | true | Enable/disable intercom entirely |
-| `replyHint` | true | Include reply instruction in incoming messages |
+| `enabled` | true | Legacy runtime switch. When `false`, suppresses broker/session connection and broker-required operations; it does not unregister public resources, and local subagent event relay may still operate. Use `surface: "off"` for a hard stop |
+| `surface` | `"full"` | Choose `full`, `bridge`, or `off` as described above |
+| `replyHint` | true | Include reply instruction in incoming messages when the full tool surface is active |
 | `showIncomingMessages` | true | Render inbound message boxes in the TUI; when false, messages are still delivered to the model |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 

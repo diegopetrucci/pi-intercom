@@ -501,6 +501,11 @@ function firstTextContent(result: { content?: Array<{ type: string; text?: strin
 export default function piIntercomExtension(pi: ExtensionAPI) {
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
+  const surface = config.surface;
+  const fullSurfaceEnabled = surface === "full";
+  if (surface === "off") {
+    return;
+  }
   let runtimeContext: ExtensionContext | null = null;
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
@@ -707,7 +712,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       replyTracker.queueTurnContext(entry.context);
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
-    const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
+    const replyInstruction = fullSurfaceEnabled && entry.replyCommand
+      ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}`
+      : "";
     pi.sendMessage(
       {
         customType: "intercom_message",
@@ -789,7 +796,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       ? formatAttachments(message.content.attachments)
       : "";
     const bodyText = `${message.content.text}${attachmentText}`;
-    const replyCommand = config.replyHint && message.expectsReply
+    const replyCommand = fullSurfaceEnabled && config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
     const context = replyTracker.recordIncomingMessage(from, message);
@@ -1187,7 +1194,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   });
 
   const childOrchestratorMetadata = readChildOrchestratorMetadata();
-  if (childOrchestratorMetadata) {
+  if (fullSurfaceEnabled && childOrchestratorMetadata) {
     pi.registerTool({
       name: "contact_supervisor",
       label: "Contact Supervisor",
@@ -1474,7 +1481,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     });
   }
 
-  pi.registerTool({
+  if (fullSurfaceEnabled) pi.registerTool({
     name: "intercom",
     label: "Intercom",
     description: `Send a message to another pi session running on this machine.
@@ -1977,13 +1984,15 @@ Usage:
     }
   }
 
-  pi.registerCommand("intercom", {
-    description: "Open session intercom overlay",
-    handler: async (_args, ctx) => openIntercomOverlay(ctx),
-  });
+  if (fullSurfaceEnabled) {
+    pi.registerCommand("intercom", {
+      description: "Open session intercom overlay",
+      handler: async (_args, ctx) => openIntercomOverlay(ctx),
+    });
 
-  pi.registerShortcut("alt+m", {
-    description: "Open session intercom",
-    handler: async (ctx) => openIntercomOverlay(ctx),
-  });
+    pi.registerShortcut("alt+m", {
+      description: "Open session intercom",
+      handler: async (ctx) => openIntercomOverlay(ctx),
+    });
+  }
 }

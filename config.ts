@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getIntercomDir } from "./profile.js";
 
+export type IntercomSurface = "full" | "bridge" | "off";
+
 export interface IntercomConfig {
   /** Broker command used to spawn the broker process (e.g. "npx" or "bun") */
   brokerCommand: string;
@@ -14,10 +16,13 @@ export interface IntercomConfig {
 
   /** Optional custom status suffix shown after automatic lifecycle status */
   status?: string;
-  
+
   /** Enable/disable intercom (default: true) */
   enabled: boolean;
-  
+
+  /** Intercom tool surface to expose (default: full) */
+  surface: IntercomSurface;
+
   /** Show reply hint in incoming messages (default: true) */
   replyHint: boolean;
 
@@ -29,19 +34,43 @@ function getConfigPath(): string {
   return join(getIntercomDir(), "config.json");
 }
 
+const INTERCOM_SURFACES = ["full", "bridge", "off"] as const;
+
 const defaults: IntercomConfig = {
   brokerCommand: "npx",
   brokerArgs: ["--no-install", "tsx"],
   confirmSend: false,
   enabled: true,
+  surface: "full",
   replyHint: true,
   showIncomingMessages: true,
 };
 
+function parseSurface(value: unknown, source: string): IntercomSurface | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    console.warn(`Ignoring invalid intercom surface from ${source}: expected one of ${INTERCOM_SURFACES.join("|")}.`);
+    return undefined;
+  }
+
+  if ((INTERCOM_SURFACES as readonly string[]).includes(value)) {
+    return value as IntercomSurface;
+  }
+
+  console.warn(`Ignoring invalid intercom surface from ${source}: ${JSON.stringify(value)}. Expected one of ${INTERCOM_SURFACES.join("|")}.`);
+  return undefined;
+}
+
 export function loadConfig(): IntercomConfig {
   const configPath = getConfigPath();
+  const envSurfaceValue = process.env.PI_INTERCOM_SURFACE;
+  const envSurface = parseSurface(envSurfaceValue, "PI_INTERCOM_SURFACE");
+  const envSurfaceOverride = envSurfaceValue === undefined ? undefined : envSurface ?? "full";
   if (!existsSync(configPath)) {
-    return { ...defaults };
+    return envSurfaceOverride === undefined ? { ...defaults } : { ...defaults, surface: envSurfaceOverride };
   }
   
   try {
@@ -93,6 +122,13 @@ export function loadConfig(): IntercomConfig {
       config.enabled = parsedConfig.enabled;
     }
 
+    if (Object.hasOwn(parsedConfig, "surface")) {
+      const surface = parseSurface(parsedConfig.surface, `${configPath}#surface`);
+      if (surface !== undefined) {
+        config.surface = surface;
+      }
+    }
+
     if (Object.hasOwn(parsedConfig, "replyHint")) {
       if (typeof parsedConfig.replyHint !== "boolean") {
         throw new Error(`"replyHint" must be a boolean`);
@@ -114,9 +150,13 @@ export function loadConfig(): IntercomConfig {
       config.status = parsedConfig.status;
     }
 
+    if (envSurfaceOverride !== undefined) {
+      config.surface = envSurfaceOverride;
+    }
+
     return config;
   } catch (error) {
     console.error(`Failed to load intercom config at ${configPath}:`, error);
-    return { ...defaults };
+    return envSurfaceOverride === undefined ? { ...defaults } : { ...defaults, surface: envSurfaceOverride };
   }
 }
