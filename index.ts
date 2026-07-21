@@ -1049,13 +1049,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }
     })();
   }
-  pi.events.on(SUBAGENT_CONTROL_INTERCOM_EVENT, (payload) => {
-    relaySubagentIntercomPayload(payload, {
-      sender: "subagent-control",
-      status: "needs_attention",
-      errorEntryType: "intercom_control_error",
+  if (fullSurfaceEnabled) {
+    pi.events.on(SUBAGENT_CONTROL_INTERCOM_EVENT, (payload) => {
+      relaySubagentIntercomPayload(payload, {
+        sender: "subagent-control",
+        status: "needs_attention",
+        errorEntryType: "intercom_control_error",
+      });
     });
-  });
+  }
   pi.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
     relaySubagentIntercomPayload(payload, {
       sender: "subagent-result",

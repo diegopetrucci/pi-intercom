@@ -465,7 +465,7 @@ test("bridge surface omits local tools, command, and shortcut while keeping rich
   });
 });
 
-test("bridge surface keeps broker lifecycle and control relay compatibility", { concurrency: false }, async () => {
+test("bridge surface keeps broker lifecycle while ignoring control relay events", { concurrency: false }, async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const { planner, cleanup } = await setupClients();
 
@@ -530,10 +530,8 @@ test("bridge surface keeps broker lifecycle and control relay compatibility", { 
       });
       await new Promise((resolve) => setImmediate(resolve));
 
-      assert.equal(harness.sentMessages.length, 1);
-      assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
-      assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
-      assert.match(harness.sentMessages[0]?.message.content ?? "", /needs attention in run 91bc2d44/);
+      assert.equal(harness.sentMessages.length, 0);
+      assert.deepEqual(harness.entries, []);
 
       await harness.emitLifecycle("session_shutdown");
     });
@@ -1484,24 +1482,27 @@ test("full ask/reply round-trip works with reply target resolved from current tu
   }
 });
 
-test("subagent control intercom events wake the current orchestrator session", async () => {
+test("full surface still relays subagent control intercom events to the current orchestrator session", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
-  const harness = createExtensionHarness("orchestrator");
 
-  piIntercomExtension(harness.pi as never);
-  harness.pi.events.emit("subagent:control-intercom", {
-    to: "orchestrator",
-    source: "foreground",
-    message: "subagent needs attention\n\nworker needs attention in run 78f659a3.",
+  await withIntercomSurfaceEnv("full", async () => {
+    const harness = createExtensionHarness("orchestrator");
+
+    piIntercomExtension(harness.pi as never);
+    harness.pi.events.emit("subagent:control-intercom", {
+      to: "orchestrator",
+      source: "foreground",
+      message: "subagent needs attention\n\nworker needs attention in run 78f659a3.",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-control/);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /worker needs attention in run 78f659a3/);
+    assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+    await assert.doesNotReject(() => harness.emitLifecycle("turn_start"));
   });
-  await new Promise((resolve) => setImmediate(resolve));
-
-  assert.equal(harness.sentMessages.length, 1);
-  assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
-  assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-control/);
-  assert.match(harness.sentMessages[0]?.message.content ?? "", /worker needs attention in run 78f659a3/);
-  assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
-  await assert.doesNotReject(() => harness.emitLifecycle("turn_start"));
 });
 
 test("async subagent result intercom events still wake the current orchestrator session", async () => {
