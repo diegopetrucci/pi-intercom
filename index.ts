@@ -1056,14 +1056,16 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       errorEntryType: "intercom_control_error",
     });
   });
-  pi.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
-    relaySubagentIntercomPayload(payload, {
-      sender: "subagent-result",
-      status: "result",
-      errorEntryType: "intercom_result_error",
-      acknowledge: true,
+  if (fullSurfaceEnabled) {
+    pi.events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
+      relaySubagentIntercomPayload(payload, {
+        sender: "subagent-result",
+        status: "result",
+        errorEntryType: "intercom_result_error",
+        acknowledge: true,
+      });
     });
-  });
+  }
   pi.on("session_start", (_event, ctx) => {
     if (!config.enabled) {
       return;
