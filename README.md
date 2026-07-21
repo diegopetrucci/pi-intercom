@@ -26,7 +26,7 @@ Pi-intercom also integrates well with [pi-subagents](https://github.com/nicobail
 
 ## In One Minute
 
-Each pi session that has `pi-intercom` loaded, `enabled`, and a non-`off` surface connects to a tiny local broker over a local IPC transport. In the default `full` surface, the extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). In `bridge`, it keeps the broker/runtime path needed for subagent rich-result and control relays but omits the local intercom tool and pi-intercom's compatibility supervisor tool. Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
+Each pi session that has `pi-intercom` loaded, `enabled`, and a non-`off` surface connects to a tiny local broker over a local IPC transport. In the default `full` surface, the extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). In `bridge`, it keeps the broker/runtime path needed for subagent rich-result relay and delivery acknowledgements, but omits the local intercom tool, control relay handling, and pi-intercom's compatibility supervisor tool. Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
 
 ## Install
 
@@ -231,7 +231,7 @@ The planner typically uses `send`. If you prefer manual approval for outgoing no
 
 This workflow requires [`pi-subagents`](https://github.com/nicobailon/pi-subagents). Modern `pi-subagents` owns and provides native child-to-supervisor supervision. In `full` mode, pi-intercom also retains its legacy/compatibility `contact_supervisor` implementation when child bridge metadata is present; this sits alongside the regular `intercom` tool. In `bridge` mode, pi-intercom deliberately omits that duplicate and relies on the native `pi-subagents` supervisor tool. Normal sessions never receive a child-only `contact_supervisor` tool.
 
-The temporary `bridge` surface remains responsible only for rich subagent result/control delivery compatibility during tlh migration work. It does not replace or provide native supervisor tooling.
+The temporary `bridge` surface remains responsible only for rich subagent result delivery compatibility during tlh migration work. Control relay remains `full`-mode-only in this partial bridge state. It does not replace or provide native supervisor tooling.
 
 ### When pi-intercom's Compatibility Tool Appears
 
@@ -402,10 +402,10 @@ Create `$PI_CODING_AGENT_DIR/intercom/config.json` (or `~/.pi/agent/intercom/con
 | Surface | Default | What it does |
 |---------|---------|--------------|
 | `full` | yes | Default behavior: registers the `intercom` tool, `/intercom`, `Alt+M`, normal reply hints, and pi-intercom's compatibility `contact_supervisor` when `pi-subagents` provides child metadata |
-| `bridge` | no | Keeps broker/runtime compatibility for temporary tlh migration bridging, including rich subagent result delivery and control relay behavior, but omits the local `intercom` tool, `/intercom`, `Alt+M`, reply-hint tool instructions, and pi-intercom's duplicate compatibility `contact_supervisor` |
+| `bridge` | no | Keeps broker/runtime compatibility for temporary tlh migration bridging, including rich subagent result delivery and delivery acknowledgements, but omits the local `intercom` tool, `/intercom`, `Alt+M`, reply-hint tool instructions, control relay handling, and pi-intercom's duplicate compatibility `contact_supervisor` |
 | `off` | no | Installs no intercom runtime or public surface |
 
-`bridge` is intentionally narrower than `full`: it is a temporary compatibility surface until native `pi-subagents` has rich-result/control delivery parity, not a replacement for native supervisor tooling (which modern `pi-subagents` already provides).
+`bridge` is intentionally narrower than `full`: it is a temporary compatibility surface until native `pi-subagents` has rich-result delivery parity. Control relay stays `full`-mode-only for now, and `bridge` is not a replacement for native supervisor tooling (which modern `pi-subagents` already provides).
 
 ### `PI_INTERCOM_SURFACE` precedence
 
