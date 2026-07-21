@@ -414,7 +414,7 @@ test("contact supervisor tool renders reason and reply state", async () => {
   });
 });
 
-test("bridge surface omits local tools, command, and shortcut while keeping rich async result relay", async () => {
+test("bridge surface omits local tools, command, shortcut, and result relay acknowledgements", async () => {
   const { default: piIntercomExtension } = await import("./index.ts");
   const deliveryAcks: unknown[] = [];
 
@@ -445,8 +445,7 @@ test("bridge surface omits local tools, command, and shortcut while keeping rich
           "Agent: worker",
           "Status: completed",
           "Summary:",
-          "- Added bridge-only registration gating.",
-          "- Preserved acknowledgements and wake-up delivery.",
+          "- Bridge ignores result relay.",
           "",
           "```json",
           '{"ok":true,"mode":"bridge"}',
@@ -455,13 +454,35 @@ test("bridge surface omits local tools, command, and shortcut while keeping rich
       });
       await new Promise((resolve) => setImmediate(resolve));
 
-      assert.equal(harness.sentMessages.length, 1);
-      assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
-      assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
-      assert.match(harness.sentMessages[0]?.message.content ?? "", /Summary:/);
-      assert.match(harness.sentMessages[0]?.message.content ?? "", /```json/);
-      assert.deepEqual(deliveryAcks, [{ requestId: "bridge-result-1", delivered: true }]);
+      assert.equal(harness.sentMessages.length, 0);
+      assert.deepEqual(deliveryAcks, []);
     });
+  });
+});
+
+test("full surface still relays async subagent results and emits delivery acknowledgements", async () => {
+  const { default: piIntercomExtension } = await import("./index.ts");
+  const deliveryAcks: unknown[] = [];
+
+  await withIntercomSurfaceEnv("full", async () => {
+    const harness = createExtensionHarness("orchestrator");
+    harness.pi.events.on("subagent:result-intercom-delivery", (payload) => deliveryAcks.push(payload));
+
+    piIntercomExtension(harness.pi as never);
+    harness.pi.events.emit("subagent:result-intercom", {
+      to: "orchestrator",
+      requestId: "full-result-1",
+      source: "async",
+      message: "subagent result\n\nRun: 78f659a3\nAgent: worker\nStatus: completed",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(harness.sentMessages.length, 1);
+    assert.equal(harness.sentMessages[0]?.message.customType, "intercom_message");
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /From subagent-result/);
+    assert.match(harness.sentMessages[0]?.message.content ?? "", /Status: completed/);
+    assert.equal(harness.sentMessages[0]?.options?.triggerTurn, true);
+    assert.deepEqual(deliveryAcks, [{ requestId: "full-result-1", delivered: true }]);
   });
 });
 
